@@ -4,6 +4,18 @@ uf（Uniflowed）の日本語解説サイト。[docs.uniflowed.dev](https://docs
 
 **このサイト自身が uf で動いています。** 48 ページは `app/` 配下の MDX で、`uf build` がすべてプリレンダリングします。
 
+公開先: <https://junpayment.github.io/uflabo/>
+
+`main` に push すると GitHub Actions が uf を入れ、`uf run ci`（整形チェック・型チェック・ビルド・リンク検査）を通してから `dist/` を GitHub Pages に出します。
+
+## 配信先とパス
+
+GitHub Pages のプロジェクトサイトは `https://<user>.github.io/<repo>/` に出るので、`uf.config.js` で `app.router.basePath: "/uflabo"` を設定しています。ローカルも同じく `/uflabo/` 配下で配信されます（`http://localhost:3000/uflabo/`）。
+
+uf が base を付けてくれるのは **uf 自身が書くアドレス**だけです。`<Link to>`、履歴、アセットの URL、sitemap。**本文の Markdown リンクは素の `<a>` になるので付きません**。だから本文のリンクは `/uflabo/why/compare` のように base 込みで書きます。付け忘れは `uf run links` が「base の外」として落とします。
+
+自分で組む絶対 URL は `basePath()` を通します（レイアウトのスタイルシートと favicon、検索インデックスの取得がそれです）。
+
 ## 使い方
 
 ```sh

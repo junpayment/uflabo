@@ -96,7 +96,7 @@ error: this project cannot be served by a static host, so `uf build --adapter st
     embedded bytes   1.76 MB
 ```
 
-そのファイルは単独でコピーできます。ビルドには bun が必要で、実行には何も要りません。トレードは明白で、ランタイムとアセットは中に固定されるので、どちらを変えるにもビルドし直しです。コンパイル済みバイナリはルートキャッシュを持たないことにも注意（[キャッシュ](/app/caching)）。
+そのファイルは単独でコピーできます。ビルドには bun が必要で、実行には何も要りません。トレードは明白で、ランタイムとアセットは中に固定されるので、どちらを変えるにもビルドし直しです。コンパイル済みバイナリはルートキャッシュを持たないことにも注意（[キャッシュ](/uflabo/app/caching)）。
 
 ```sh
 $ scp dist/docs server:/srv/docs && ssh server /srv/docs --port 8080
@@ -108,7 +108,7 @@ uf: listening on http://127.0.0.1:8080
 
 ソケットを選ぶ値（`HOST`、`PORT`、そのコマンドライン上書き）は、`uf start`、node/bun/deno/container アダプタのサーバー、コンパイル済みバイナリが起動するときに読まれます。`process.env` で読むサーバー専用の値も、それを読むコードがサーバーで走る限り起動時の値です。
 
-ブラウザに出荷される値は違います。クライアントバンドルの一部で、リビルドが要ります。[環境](/toolchain/environments) がより長い契約です。
+ブラウザに出荷される値は違います。クライアントバンドルの一部で、リビルドが要ります。[環境](/uflabo/toolchain/environments) がより長い契約です。
 
 ## 確立されていること
 

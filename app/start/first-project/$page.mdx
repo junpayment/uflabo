@@ -109,7 +109,7 @@ export component Page() {
 
 依存をインストールしたら `children: React.Node` に書き換えてください（`import * as React from "@uniflowed/react"`）。スキャフォールドが `mixed` と書くのは、`uf install` の前に走るからです。その時点で `@uniflowed/react` は何にも解決せず、それに対して書いた注釈は uf が最初に書いたファイルでエラーになってしまいます。
 
-スキャフォールドはページを `<Suspense>` で包みません。`fallback={null}` で全ページを包むのは、包まないより悪いからです。その下でサスペンドしたページは React の言う通りに失敗するのではなく、空のドキュメントとして描画され、何もそれを言いません。境界を宣言する方法は [ルーティング](/app/routing) を参照。
+スキャフォールドはページを `<Suspense>` で包みません。`fallback={null}` で全ページを包むのは、包まないより悪いからです。その下でサスペンドしたページは React の言う通りに失敗するのではなく、空のドキュメントとして描画され、何もそれを言いません。境界を宣言する方法は [ルーティング](/uflabo/app/routing) を参照。
 
 ## ビルド
 
@@ -132,4 +132,4 @@ uf test    # テスト
 
 ## 次に読む
 
-[エディタ](/start/editors) で `uf lsp` を繋ぎ、[チュートリアル](/start/tutorial) でアプリを 1 つ端から端まで作ります。
+[エディタ](/uflabo/start/editors) で `uf lsp` を繋ぎ、[チュートリアル](/uflabo/start/tutorial) でアプリを 1 つ端から端まで作ります。

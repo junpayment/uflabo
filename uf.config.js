@@ -15,7 +15,8 @@ export default defineConfig({
     // ページの一覧と検索インデックスは MDX の front matter から生成する。
     // uf 自身が router.js を生成するのと同じで、唯一の出典は各ページのままにする。
     pages: {
-      command: "node scripts/pages.mjs",
+      // 生成したものをそのまま整形する。整形前の形が fmt --check に当たらないように。
+      command: "node scripts/pages.mjs && uf fmt app/_design/pages.js",
       inputs: ["app/**", "scripts/pages.mjs"],
       outputs: ["app/_design/pages.js", "public/search-index.json"],
     },
@@ -27,6 +28,6 @@ export default defineConfig({
     test: { command: "uf test" },
     links: { command: "node scripts/check-links.mjs", dependsOn: ["build"] },
     ci: { command: "echo ok", dependsOn: ["fmt:check", "check", "links"] },
-    "fmt:check": { command: "uf fmt --check" },
+    "fmt:check": { command: "uf fmt --check", dependsOn: ["pages"] },
   },
 });

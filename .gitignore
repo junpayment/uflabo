@@ -1,4 +1,12 @@
 node_modules/
+
+# uf と scripts/pages.mjs の生成物
 dist/
 .uf/
 router.js
+server-actions.js
+app/_design/pages.js
+public/search-index.json
+
+.env.local
+.env.*.local

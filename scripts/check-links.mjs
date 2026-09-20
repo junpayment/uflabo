@@ -8,6 +8,11 @@ import { join } from "node:path";
 const ROOT = new URL("..", import.meta.url).pathname;
 const DIST = join(ROOT, "dist");
 
+// アプリが配信されるパス。uf.config.js は実行されず読まれるだけなので、
+// basePath は必ずリテラルで、こちらもそう読む。
+const config = readFileSync(join(ROOT, "uf.config.js"), "utf8");
+const BASE = (config.match(/basePath:\s*"([^"]*)"/) ?? [, ""])[1].replace(/\/$/, "");
+
 if (!existsSync(DIST)) {
   console.error("dist/ がありません。先に `uf build` を走らせてください。");
   process.exit(2);
@@ -47,12 +52,27 @@ for (const file of files) {
   for (const match of html.matchAll(/href="([^"]+)"/g)) {
     const href = match[1];
     if (/^(https?:|mailto:|#)/.test(href)) continue;
-    if (href.startsWith("/assets/") || href === "/favicon.svg" || href === "/seam.css") continue;
+    const [rawTarget, anchor] = href.split("#");
 
-    const [target, anchor] = href.split("#");
+    // base の下にあるものだけがこのサイトのアドレス
+    if (
+      BASE !== "" &&
+      rawTarget.startsWith("/") &&
+      !rawTarget.startsWith(BASE + "/") &&
+      rawTarget !== BASE
+    ) {
+      console.log(`base の外   ${from} -> ${href}`);
+      problems++;
+      continue;
+    }
+    const target = BASE === "" ? rawTarget : rawTarget.slice(BASE.length) || "/";
+
+    if (target.startsWith("/assets/") || target === "/favicon.svg" || target === "/seam.css")
+      continue;
+    if (target === "/search-index.json" || target.endsWith("/__uf.flight")) continue;
 
     // 相対リンクは移行の取り残し。絶対パスで書く
-    if (!target.startsWith("/")) {
+    if (!rawTarget.startsWith("/")) {
       console.log(`相対リンク   ${from} -> ${href}`);
       problems++;
       continue;

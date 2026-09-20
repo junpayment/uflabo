@@ -17,7 +17,7 @@ source: "/guide/dependencies"
 5. 上のどれかを言うワークスペースルート
 6. npm
 
-マネージャを走らせるすべてのコマンドは、何を選んだかとなぜかを `chosen by` 行に印字します。`packageManager: "pnpm@10"` はリリースも固定でき、`uf.lock` にロックされ uf のストアに入れられ、全マシンが同じ pnpm をプロジェクトのランタイム上で走らせます（[環境](/toolchain/environments)）。
+マネージャを走らせるすべてのコマンドは、何を選んだかとなぜかを `chosen by` 行に印字します。`packageManager: "pnpm@10"` はリリースも固定でき、`uf.lock` にロックされ uf のストアに入れられ、全マシンが同じ pnpm をプロジェクトのランタイム上で走らせます（[環境](/uflabo/toolchain/environments)）。
 
 ## インストール
 
@@ -62,7 +62,7 @@ resolve / fetch / dependency tree の節は npm 自身の出力とロックフ�
 | Yarn 2+ | `yarn install --immutable` |
 | Bun | `bun install --frozen-lockfile` |
 
-それぞれ `--ignore-scripts` つき。[CI](/toolchain/ci) がこれがすべてのチェックの前に来る理由を説明します。何もインストールされていない `uf check` は解決できない import をすべて `any` として型付けするからです。
+それぞれ `--ignore-scripts` つき。[CI](/uflabo/toolchain/ci) がこれがすべてのチェックの前に来る理由を説明します。何もインストールされていない `uf check` は解決できない import をすべて `any` として型付けするからです。
 
 ## スクリプト
 

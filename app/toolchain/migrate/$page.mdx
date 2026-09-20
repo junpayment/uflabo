@@ -36,7 +36,7 @@ uf new ../my-app-uf
 | `babel.config.js`、`@babel/preset-flow`、構文プラグイン | **なし** — Flow はバイナリの中で JavaScript に届く |
 | `tsconfig.json` | **なし** — 型システムは Flow で、uf が設定する |
 | `.prettierrc` | `uf.config.js` の `fmt`。`lineWidth` はデフォルト 80 ではなく 100 |
-| `.eslintrc`, `eslint.config.js` | `uf.config.js` の `lint.rules`。[ESLint からの対応表](/toolchain/fmt-lint#eslint-から来る人へ) |
+| `.eslintrc`, `eslint.config.js` | `uf.config.js` の `lint.rules`。[ESLint からの対応表](/uflabo/toolchain/fmt-lint#eslint-から来る人へ) |
 | `jest.config.js`, `vitest.config.ts` | `uf.config.js` の `test`、ほとんどのスイートでは何も要らない |
 | `vite.config.ts` | `uf.config.js`。uf が意見を持たないものは `vite` キーに |
 | `package.json` の `scripts` | `uf.config.js` の `tasks` |
@@ -280,4 +280,4 @@ uf 0.0.0-alpha.40 で、loader 付きのページ、`$route.js` ハンドラ、�
 
 **2 番目の数が、型システムが元を取るかどうかを決めます。** あなたのコードベースにとっての本当の変換レートでもあり、このページが主張できるどんな数字にも勝ちます。
 
-答えが「まだ」になったなら、それはサポートされた答えです。[uf がやらないこと](/why/not-do) のリストが存在するのはそのためです。
+答えが「まだ」になったなら、それはサポートされた答えです。[uf がやらないこと](/uflabo/why/not-do) のリストが存在するのはそのためです。

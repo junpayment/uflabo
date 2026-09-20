@@ -134,7 +134,7 @@ component Account() {
 
 ## サーバーアクションへ送信
 
-有用な形は 2 つあり、別の仕事をします。ネイティブの `<form action={serverAction}>` は [Server Actions](/app/server-actions) のもので、React が submit を所有し、アクションは `FormData` を受け取り、`useActionState` が結果を所有します。`@uniflowed/form` が所有するのは別の形: クライアントで検証し、型付きの値を送信し、全フィールドの購読とエラーメッセージをフォームストアに保つ。
+有用な形は 2 つあり、別の仕事をします。ネイティブの `<form action={serverAction}>` は [Server Actions](/uflabo/app/server-actions) のもので、React が submit を所有し、アクションは `FormData` を受け取り、`useActionState` が結果を所有します。`@uniflowed/form` が所有するのは別の形: クライアントで検証し、型付きの値を送信し、全フィールドの購読とエラーメッセージをフォームストアに保つ。
 
 ```js
 const submit = handleSubmit((values) => {

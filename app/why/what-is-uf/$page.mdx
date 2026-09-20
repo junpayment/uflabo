@@ -15,12 +15,12 @@ source: "/guide/why-uf"
 | ページ | 何を語るか |
 | --- | --- |
 | uf とは何か（このページ） | ツールの寄せ集めではなく 1 つのツールチェーンを選ぶ理由 |
-| [なぜ Flow か](/why/why-flow) | Flow が React について「他の型システムには言えないこと」を言える理由と、その代償 |
-| [Flow と TypeScript](/why/flow-vs-typescript) | TypeScript が勝つ行、Flow が勝つ 4 つの行、そして uf が存在できる理由 |
-| [他ツールとの比較](/why/compare) | Next.js / Vite / Bun / CRA と並べて。負ける行も同じ表に |
-| [uf と Vite+](/why/vite-plus) | いちばん比較されるツールチェーンとの位置関係 |
-| [uf がやらないこと](/why/not-do) | 意図的な拒否と、issue 番号つきの未実装 |
-| [アーキテクチャ](/why/architecture) | CRA の何が失敗だったか、uf が越えないレッドライン |
+| [なぜ Flow か](/uflabo/why/why-flow) | Flow が React について「他の型システムには言えないこと」を言える理由と、その代償 |
+| [Flow と TypeScript](/uflabo/why/flow-vs-typescript) | TypeScript が勝つ行、Flow が勝つ 4 つの行、そして uf が存在できる理由 |
+| [他ツールとの比較](/uflabo/why/compare) | Next.js / Vite / Bun / CRA と並べて。負ける行も同じ表に |
+| [uf と Vite+](/uflabo/why/vite-plus) | いちばん比較されるツールチェーンとの位置関係 |
+| [uf がやらないこと](/uflabo/why/not-do) | 意図的な拒否と、issue 番号つきの未実装 |
+| [アーキテクチャ](/uflabo/why/architecture) | CRA の何が失敗だったか、uf が越えないレッドライン |
 
 ## 主張: パースは 1 回でいい
 
@@ -55,11 +55,11 @@ uf はこれらで勝つとは主張しません。主張するのは、「React
 
 ## どう決めるか（要約）
 
-公式の [Flow と TypeScript](/why/flow-vs-typescript) の結論をそのまま引くと:
+公式の [Flow と TypeScript](/uflabo/why/flow-vs-typescript) の結論をそのまま引くと:
 
-- **TypeScript に留まるべき人**: 型付き依存が多くて `any` の穴を許容できない、チームが採用中、[負ける行](/why/compare#負ける行を先に読む)のどれかが今期の生命線。「それはほとんどの人であり、妥当な答えだ」と公式も書いています。
+- **TypeScript に留まるべき人**: 型付き依存が多くて `any` の穴を許容できない、チームが採用中、[負ける行](/uflabo/why/compare#負ける行を先に読む)のどれかが今期の生命線。「それはほとんどの人であり、妥当な答えだ」と公式も書いています。
 - **uf を試すべき人**: 型システムに捕まえてほしいのが「足りない prop」「間違った場所から呼ばれた hook」「そこに属さない子コンポーネント」「拡張し忘れた match」であり、インターフェースが予告なく変わるプレリリースを許容できる人。
 
 ## 次に読む
 
-判断がついたら [インストール](/start/install) へ。既存アプリがあるなら、変換を始める前に [移行ガイド](/toolchain/migrate) を読んでください。
+判断がついたら [インストール](/uflabo/start/install) へ。既存アプリがあるなら、変換を始める前に [移行ガイド](/uflabo/toolchain/migrate) を読んでください。

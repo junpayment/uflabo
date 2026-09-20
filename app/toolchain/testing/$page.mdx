@@ -1,0 +1,186 @@
+---
+title: "テスト"
+description: "uf test は JavaScript ワーカーを持つ Rust ランナー。何が、どの順で、何コアで走り、レポートが何を言うかを Rust が決め、本体はホストが走らせる。JavaScript を実行することだけが Rust にできないから。"
+section: "toolchain"
+order: 4
+source: "/guide/testing"
+---
+
+## 性能モデル
+
+ランナーは高価で不安定な仕事が隔離されるように分割されています。
+
+| フェーズ | 走る場所 | 時間を食うもの |
+| --- | --- | --- |
+| プロジェクト探索 | Rust | ファイル走査、ignore ルール、timings 読み取り |
+| テスト探索 | Rust | Flow のパースと宣言の発見 |
+| スケジューリング | Rust | 記録された duration かファイルサイズでソート |
+| 実行 | Node / Bun / Deno | 変換済みファイルの import とケースの実行 |
+| レポート | Rust | JSON、JUnit、カバレッジサマリ、ターミナル出力 |
+
+空のスケジュールは JavaScript の問題ではありません。パスフィルタや名前フィルタで実行するテストファイルがなければ、uf は JS ホストを解決・起動する前に戻ります。
+
+## テストを書く
+
+```js
+// @flow
+import { describe, expect, it } from "@uniflowed/test";
+import { total } from "./cart.js";
+
+describe("total", () => {
+  it("sums the line items", () => {
+    expect(total([{ price: 300 }, { price: 120 }])).toBe(420);
+  });
+
+  it("rejects a negative price", async () => {
+    await expect(total([{ price: -1 }])).rejects.toThrow("negative");
+  });
+});
+```
+
+テストファイルは他と同じ Flow です。`component` `hook` `match` `enum` がすべて中で動きます。各ワーカーがビルドと同じ変換でファイルを import するから。
+
+`describe` `it` `test` `beforeAll` `beforeEach` `afterEach` `afterAll` があり、`.only` `.skip` `.todo` `.each` も。`it.skipBecause(name, reason, body?)` はスイートに属するがこのホストではまだ走れないケースの明示的なスキップで、理由はターミナル・`--json`（`skipReason`）・JUnit（`<skipped message>`）に運ばれます。`expect` は 42 のマッチャー、`.not` `.resolves` `.rejects`、スパイの `fn()`。
+
+### テスト対象のコードの横に
+
+```js
+// @flow
+import { expect, it } from "@uniflowed/test";
+
+export function slugify(title: string): string {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+if (import.meta.uf.test) {
+  it("collapses runs of punctuation", () => {
+    expect(slugify("Hello,  world!")).toBe("hello-world");
+  });
+}
+```
+
+`import.meta.uf.test` は `import.meta.vitest` のように、テスト対象のモジュールに住むブロックです。`uf test` は `.test.js` を見つけるのと同じ探索で見つけます。ブロックはビルドに届きません。uf は `uf test` が始める変換以外のすべてで `import.meta.uf.test` を `void 0` にコンパイルし、バンドラは分岐と、分岐だけが使っていた import を取り除きます。
+
+### アクセシビリティ
+
+```js
+it("is accessible", async () => {
+  const { container } = render(<Invoice total={420} />);
+  await expect(container).toHaveNoAxeViolations();
+});
+```
+
+描画済みツリーに axe-core を走らせます。await が必須の唯一のマッチャーで、型がそう言うので忘れるとチェッカーのエラーです。axe-core は省略可能な依存（`uf add -D axe-core`）。ルール集合は `uf.config.js` の `accessibility.axe` で一度設定します（`color-contrast` はレイアウトが必要で Node ワーカーの DOM にはないので無効化するのが典型）。
+
+`uf dev` も同じ監査を画面上のページに走らせ、診断チャネルでターミナルに報告します。`uf lint` の `a11y/*` とは別物で、どちらも他方を置き換えません。リンタは描画されていない JSX を読んで `<img>` に `alt` がないと言え、監査は React が生んだものを読んで見出しレベルが 1 段飛んでいると言えます。
+
+## モジュールを置き換える
+
+`fn()` と `uft.spyOn` はテストが届けるオブジェクトのメソッドを置き換えます。評価中にクライアントを import して呼ぶコンポーネントにはそのオブジェクトがなく、import が唯一の継ぎ目なので、`uft.mock` はモジュール全体を置き換えます。
+
+```js
+// @flow
+import typeof * as ClientModule from "./client.js";
+import { describe, expect, it, uft } from "@uniflowed/test";
+
+describe("the dashboard", () => {
+  it("renders what the client returned", async () => {
+    await uft.mock<ClientModule>("./client.js", () => ({
+      send: uft.fn(() => ({ total: 420 })),
+    }));
+
+    const { summary } = await import("./dashboard.js");
+    expect(summary()).toBe("420");
+  });
+});
+```
+
+**何も hoist されません。** Vitest は Babel パスで `vi.mock` を import 宣言の上に持ち上げますが、uf のパイプラインに Babel はなく、テストヘルパーのために足しません。ルールは Bun のもの:
+
+- すべての import 宣言はファイルの最初の文の前に走るので、静的 import は下に書かれた `uft.mock` に影響されない
+- mock は `uft.mock` の返す promise が settle した後に始まるすべての import に効く
+- だから `await import("./client.js")` がスタンドインに届く方法
+
+mock は「次の import」に効き、「最後の import」には効きません。ホストがすでに評価し importer にリンクしたモジュールを書き換えられるものはありません。Bun のエンジンはそれができ Node はできず、1 つの呼び出しが 2 ホストで 2 つのことを意味するのは、両方で狭い方を意味するより悪い。
+
+| バインディング | 何をするか |
+| --- | --- |
+| `uft.mock(specifier, factory)` | モジュールの export を登録。factory は一度、即座に走る。async でよい |
+| `uft.mock(specifier)` | 自動スタンドイン: 関数はスパイに、配列は空に、オブジェクトは追跡、プリミティブは保持 |
+| `uft.unmock(specifier)` | 以後の import でスタンドインを止める |
+| `uft.importActual(specifier)` | mock 中でも本物のモジュール。部分 mock が名指ししなかった export を保つ方法 |
+| `uft.importMock(specifier)` | 自動スタンドインを登録せず返す |
+| `uft.resetModules()` | パス import のモジュールを次の import で再評価 |
+
+`import typeof * as ClientModule` がモジュールの形を名指しし、`uft.mock<ClientModule>` が factory をそれに対してチェックします。`BASE` が `number` のスタンドインは、3 テスト後の `TypeError` ではなく呼び出し側のエラーです。
+
+**どのホストで:** Node と Deno 2.8 以降。インターセプトには同期・同スレッドのモジュールカスタマイズフック（`node:module` の `registerHooks`）が必要です。Bun の `node:module` にはそのフックがないので、7 つのバインディングすべてがホスト・フック・代替を名指す `UnsupportedError` を raise します。黙って何もしないものはありません。
+
+## 走らせる
+
+```
+ PASS  src/cart.test.js       12 tests   4ms
+ PASS  src/router.test.js     31 tests  11ms
+ FAIL  src/format.test.js      8 tests   3ms
+
+  format > wraps long lines
+    src/format.test.js:24
+
+    22 |   it("wraps long lines", () => {
+    23 |     const out = format(input, { width: 40 });
+  > 24 |     expect(out.split("\n").length).toBe(3);
+       |                                    ^
+    25 |   });
+
+    expected  3
+    received  4
+
+ 51 tests, 50 passed, 1 failed   in 0.21s
+```
+
+フレームは Flow ソースを指します。変換がソースマップを出し、ワーカーはソースマップをオンで走り、ランナー自身のスタックフレームは刈られるので、いちばん上のフレームはあなたのものです。
+
+サマリの `run` はスイート自体、`total` は周りの作業を含みます。2 つの差は「テストが遅い部分ではなかった」と言います。`schedule` の行は記録された duration からの温かいスケジュールか、ファイルサイズからの冷たいものか。`host` はテスト本体が実際に走った場所。
+
+### 何がどこで走るか
+
+- Rust がプロジェクトを読み、モジュールを import せずに Flow ソースから宣言をスキャン
+- パスフィルタ、`-t`、`.only` `.skip` `.todo` を適用し、ファイルを予想時間の長い順にソート
+- コアごとに最大 1 ワーカー（`-j` で変更）。duration が記録されると、ワーカーの起動時間より長く忙しくできる数だけ起動
+- 各ワーカーはビルドと同じ `uf transform` 経由でファイルを import し、構造化イベントをストリーム
+- Rust がリトライ、bail、ファイルタイムアウト、レポート、JUnit、JSON、カバレッジ閾値の失敗を所有
+
+ワーカーは複数ファイルを担当し得ますが、**すべてのファイルは同じテスト状態から始まります**: スパイはクリアされ、フェイクタイマーは復元され、モジュールスタンドインは落とされ、`stubEnv` / `stubGlobal` は戻されます。
+
+### ループを速く保つ
+
+```sh
+uf test --list                  # 探索ビュー。ホストを起動する前に、何が runnable / skipped / filtered か
+uf test app/cart -t "discount"  # パスは部分文字列、-t は describe を含む完全修飾名の部分文字列
+uf test --watch app/cart        # 変更ファイルが無効化したものを再実行
+uf test --changed origin/main   # ブランチについて同じ問いを一度
+```
+
+名指ししたパスは意図的に `.gitignore` を上書きします。何にもマッチしないパスは拒否されます。タイポ上の緑の実行は赤より悪いから。`--watch` は `--json` や `--coverage` と組み合わせられません。どちらも 1 つの完全なスイートについての 1 レポートを約束するから。
+
+## カバレッジ
+
+`uf test --coverage` は uf が印字した JavaScript ではなく、**あなたが書いた Flow に対して**カバレッジを報告します。
+
+```
+coverage
+file                    lines      functions      branches  uncovered
+src/badge.js  85.71% (12/14)  66.67% (2/3)   50.00% (1/2)  17-18
+
+wrote coverage/lcov.info
+```
+
+何も instrument されません。V8 が自分で実行を数え、Node がワーカー終了時に書き出し、uf は変換がすでに生むソースマップで戻します。だからスイートが走らせたコードは出荷したコードとバイト単位で同じです。ソースを書き換えて数えるどのツールにも当てはまらないことです。
+
+1 つのルールが 3 つの数字を決めます: **あなたが書いた何にも対応しない出力位置は、まったく数えない。** 型エイリアスは何も生まないので欠けた行ではなく、`match` はあなたが書いていないテストの連鎖に落ち、それらはカバーし損ねた分岐ではありません。enum ランタイムや React Compiler のメモブロックも分母に入りません。あなたのプログラムではないから。
+
+LCOV と Cobertura を書き、`uf.config.js` の `test.coverage` の閾値で実行を失敗させ、`--reporter junit` が結果を書きます。`--shard` でスイートをマシン間に分け、`--merge-shards` で 1 実行として報告します。**カバレッジは今日 Node 限定**（#1100）。
+
+## Bun との位置
+
+50 ファイル、1,000 テスト、2,000 アサーションで `bun test` 58 ms 対 `uf test` warm 125 ms / cold 429 ms。約 2.2 倍で、理由は構造的です。Bun はランナーをエンジンに書いて 1 プロセスで走り、uf はワーカーを起動し、各ワーカーに 1 ファイルずつ渡し、起動をワーカーごとに払います。隔離を外して取り戻すつもりはありません。同じ比較で `vitest run`（1,310 ms）より約 10 倍速く、Node でも Bun でも動き、Flow が動きます。

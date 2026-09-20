@@ -1,0 +1,135 @@
+---
+title: "最初のプロジェクト"
+description: "空のディレクトリからビルド済みサイトまで。書かれる 9 ファイルの全部を説明する。3 つはデモなので消す。"
+section: "start"
+order: 2
+source: "/guide/project"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+## スキャフォールド
+
+```sh
+uf new my-site
+```
+
+`my-site` が作られるディレクトリです。`uf init` はもう片方で、今いるディレクトリにスキャフォールドします。既存リポジトリの中ではこちらを使います。
+
+どちらも省略可能なテンプレートを後ろに取ります。`react` がデフォルト。`monorepo` はアプリとライブラリをワークスペースパッケージとして書き、ライブラリをアプリの前にビルドするチェックとタスクを 1 つの設定で用意します。`--lib` はライブラリをスキャフォールドします。テンプレートは `github:owner/repo#<commit>` や `--integrity` つきの tarball からも取れますが、正確なバイトに固定されている必要があります。
+
+`uf new` はプロジェクトだけを書きます。`node_modules` もロックファイルも git 履歴も書きません。
+
+```
+my-site/
+  uf.config.js         唯一の設定ファイル
+  app.js               アプリのエントリ
+  app/
+    $layout.js         ドキュメント: <html>, <head>, <body>
+    $page.js           "/" のページ
+    Counter.js         client component（デモ）
+    useCounter.js      hook 宣言（デモ）
+    $page.test.js      テスト（デモ）
+  package.json         依存だけ
+  .gitignore           生成物（コミットするものではない）
+```
+
+デモの 3 つは一度読んで消すためにあります。残る 5 ファイルがこのページの説明対象です。
+
+**`vite.config.ts` も `babel.config.js` も `.eslintrc` も `tsconfig.json` も `vitest.config.ts` もありません。** それがこの演習の要点です。
+
+## 動かす
+
+```sh
+uf dev
+```
+
+ホスト経由で Vite を起動し、uf のプラグインを入れ、あなたの設定を Vite の形に翻訳します。ホットリロードが動き、`component` 宣言を通じた React Fast Refresh も動きます。
+
+## 設定
+
+<Figure title="uf.config.js">
+
+```js
+// @flow
+import { defineConfig } from "@uniflowed/config";
+
+export default defineConfig({
+  tasks: {
+    dev: { command: "uf dev" },
+    build: { command: "uf build" },
+    check: { command: "uf check" },
+    lint: { command: "uf lint" },
+    fmt: { command: "uf fmt" },
+    test: { command: "uf test" },
+  },
+});
+```
+
+</Figure>
+
+この中にアプリを記述するものは何もありません。`app/` がルートのルートで `app.js` がエントリなのはデフォルトだからです。`tasks` ブロックは `uf run build` とパイプラインが同じことを言うためにあり、`app: { router: { entry, root } }` がそれ以外を指定する場所です。
+
+`defineConfig` は型付きの恒等関数です。Flow が設定スキーマに対してオブジェクトをチェックする場所を「uf が読む場所」ではなく「あなたが書く場所」にするために存在します。
+
+## レイアウトとページ
+
+レイアウトはドキュメントを描画します。コンポーネントであり、ページを `children` として受け取ります。
+
+<Figure title="app/$layout.js">
+
+```js
+// @flow
+
+export component Layout(children: mixed) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+</Figure>
+
+ページは `$page.js` で、`Page` として export します。
+
+<Figure title="app/$page.js">
+
+```js
+// @flow
+export component Page() {
+  return <h1>Hello</h1>;
+}
+```
+
+</Figure>
+
+ルーターは `module.default ?? module.Page` を取るので default export でも動きますが、`uf check` は default export されたコンポーネントに警告します。「位置で配線されたルートより名前で配線されたルートの方が見つけやすい」からです。
+
+依存をインストールしたら `children: React.Node` に書き換えてください（`import * as React from "@uniflowed/react"`）。スキャフォールドが `mixed` と書くのは、`uf install` の前に走るからです。その時点で `@uniflowed/react` は何にも解決せず、それに対して書いた注釈は uf が最初に書いたファイルでエラーになってしまいます。
+
+スキャフォールドはページを `<Suspense>` で包みません。`fallback={null}` で全ページを包むのは、包まないより悪いからです。その下でサスペンドしたページは React の言う通りに失敗するのではなく、空のドキュメントとして描画され、何もそれを言いません。境界を宣言する方法は [ルーティング](/app/routing) を参照。
+
+## ビルド
+
+```sh
+uf build
+```
+
+プリレンダリングできる全ルートの静的 HTML とクライアントバンドルを `dist/` に出します。`--size-report` で各チャンクのコストが見えます。
+
+## それ以外
+
+```sh
+uf check   # Flow をプロジェクト全体に走らせる
+uf fmt     # フォーマット
+uf lint    # リント
+uf test    # テスト
+```
+
+どれも先に設定する必要はありません。
+
+## 次に読む
+
+[エディタ](/start/editors) で `uf lsp` を繋ぎ、[チュートリアル](/start/tutorial) でアプリを 1 つ端から端まで作ります。

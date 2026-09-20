@@ -1,0 +1,167 @@
+---
+title: "キャッシュ"
+description: "ルートキャッシュと fetch キャッシュ。どちらもデフォルト off で、ルート・リクエストごとに opt-in。時間ベースの再検証と、タグやパスによるオンデマンド無効化。名指ししなければ 1 プロセスのメモリ内。"
+section: "app"
+order: 14
+source: "/guide/cache"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+## オンにする
+
+<Figure title="uf.config.js">
+
+```js
+// @flow
+export default {
+  app: {
+    rendering: {
+      cache: { route: true, fetch: true },
+    },
+  },
+};
+```
+
+</Figure>
+
+どちらもデフォルト `false`。他の 2 キー `data` と `actions` は未実装で、`true` にすると設定読み込みが名指しで失敗します。
+
+`route` をオンにしても何かのキャッシュが始まるわけではありません。**宣言された寿命が効くようになる**だけで、ページは自分の描画の中から寿命を宣言します。
+
+```js
+// @flow
+import { cacheLife, cacheTag } from "@uniflowed/server/cache";
+
+export default async function Posts() {
+  cacheLife({ revalidate: 60, expire: 600 });
+  cacheTag("posts");
+  const posts = await loadPosts();
+  return <PostList posts={posts} />;
+}
+```
+
+何も言わないページはキャッシュ off と同じく毎リクエスト描画されます。デフォルトの寿命はなく、今後もありません。終わりを言わないエントリは、誰かが気づくまで配信される答えです。
+
+## 2 つの数字の意味
+
+`revalidate` はエントリが stale になる時点（古いかもしれない）。`expire` はもう配信してはならない時点。`expire` は `revalidate` にデフォルトするので、stale-while-revalidate は「求めるもの」であり「得るもの」ではありません。
+
+- `{ revalidate: 60 }` — 1 分新鮮。その後のリクエストは描画して待つ
+- `{ revalidate: 60, expire: 600 }` — 1 分新鮮、その後 9 分は読者に即座に古いドキュメントを渡し、背後で更新が走る。10 分後は再び待つ
+
+描画中に複数回呼ばれたら最短の寿命が勝ちます。
+
+## オンデマンドで無効化
+
+```js
+// @flow
+import { revalidatePath, revalidateTag } from "@uniflowed/server/cache";
+
+export async function POST(request: Request): Promise<Response> {
+  await createPost(await request.json());
+  revalidateTag("posts");
+  return new Response(null, { status: 204 });
+}
+```
+
+`revalidateTag` はそのタグで埋められた全エントリ、`revalidatePath` はその URL の全エントリに届きます。無効化されたエントリは stale ではなく expired です。stale-while-revalidate の窓は適用されません。タグが無効化されたのは誰かがそれの名指すものを変えたからで、エントリは「古いかもしれない」ではなく「間違っていると分かっている」のです。
+
+## 決してキャッシュされないもの
+
+描画済みドキュメントは、次がすべて成り立つときだけ保存され、失敗した条件はレスポンスの `x-uf-cache` ヘッダに `BYPASS` として報告されます。
+
+- 描画が寿命を宣言した
+- 描画が `cookies()` `headers()` `draftMode()` を呼ばなかった
+- 描画が 200 を答えた
+- 描画が Cookie を設定しなかった
+
+2 つ目がもっとも重要で、もっとも間違いやすい。この 3 関数はドキュメントが「1 人についてのもの」になる方法で、1 人についてのドキュメントが全員で共有されるキャッシュにあるのは、フレームワークが持ち得る最悪のバグです。uf はこの呼び出しをシェルまでではなく**ドキュメント全体**で数えます。`<Suspense>` 境界内のコンポーネントはシェル解決の後で描画され、早く決めるキャッシュは末尾が誰かについてのドキュメントをキャッシュしてしまうから。
+
+ミドルウェアからの読み取りは数えません。セッション Cookie を読んで通すガードはページを変化させていません。
+
+**`uf build` はそのようなルートを書く前に拒否します。** ルートの描画が `cookies()` などに達し、そのルートが（`route` on で）寿命を宣言するかプリレンダリングされるなら、`rsc/request-state-in-static-route` でビルドが失敗し、ルート・関数・import チェーンを名指しします。ビルドは呼び出しではなく import を読むので、`cookies` を import するモジュールは `cookies` を読むものとして数えます。
+
+## fetch キャッシュ
+
+`@uniflowed/fetch` は自分が言うもののまま（失敗したレスポンスは失敗した promise、タイムアウト、リトライポリシー）で、キャッシュはその中で育つのではなく包みます。
+
+```js
+// @flow
+import { createFetch } from "@uniflowed/fetch";
+import { createCachedFetch } from "@uniflowed/server/cache";
+
+const api = createCachedFetch({ client: createFetch({ baseURL }), name: "api" });
+
+const users = await api.request("/users", {
+  cache: { lifetime: { revalidate: 60 }, tags: ["users"] },
+});
+```
+
+呼び出しごとに opt-in。`cache` オプションのないリクエストは下のクライアントとまったく同じに振る舞います。「全 GET をキャッシュ」モードはありません。すべての GET がキャッシュ可能ではなく、どれがそうか推測するフレームワークは、ある人のアカウントページを別の人に配信する道だからです。`name` は必須です。base URL の違う 2 クライアントが `/users` を要求するので。
+
+## どこに住むか
+
+メモリ内、1 プロセス、他を言うまで。これは依然本物の制限です。ロードバランサの後ろの 4 プロセスは 4 つのキャッシュを持って食い違い、再起動は 1 つを空にし、1 つでの `revalidateTag` は他 3 つに届きません。
+
+ストアを名指せば直ります。
+
+<Figure title="uf.config.js">
+
+```js
+export default {
+  app: {
+    rendering: {
+      cache: {
+        route: true,
+        store: "filesystem",
+        storeDir: "/var/cache/uf", // 省略可。デフォルト .uf/cache/route
+      },
+    },
+  },
+};
+```
+
+</Figure>
+
+永続化は最初の opt-in の上の第 2 の opt-in で、最初の何も変えません。ルートは依然寿命を宣言しなければならず、リクエストを読んだ描画は依然保存されません。
+
+### エントリはビルドでキーされる
+
+永続エントリはそれを生んだビルドより長生きするので、ビルドの識別子がすべての永続キーの先頭部分です。デプロイは、前のビルドのドキュメントで新しいビルドの URL に答える代わりに、冷えたキャッシュを読みます。`uf build` がその識別子を発行し、サーバーバンドルの横に書きます。2 つの成果物を 1 ビルドにしなければならないとき（blue/green ペア）は `UF_BUILD_ID` を設定します。サーバーアクション id が導出されるのと同じ変数です。
+
+### ディスク以外の場所
+
+`"filesystem"` は組み込みで、便宜でありアーキテクチャではありません。ストアの 1 メソッド `resolve` の後ろで、6 つの呼び出しに答えられるものならエントリを持てます。Redis、KV 名前空間、S3 バケットは、あなたが書いて名指すモジュールです（`read` `write` `remove` `invalidateTag` `invalidatePath` `clear`）。
+
+```js
+cache: { route: true, store: "./cache/redis.js" }
+```
+
+プロバイダはエントリを保存し、それ以外はしません。何が stale かを決めず、fill を走らせず、uf がエンコード済みでない値を決して見ません。
+
+`--adapter edge` はビルド時に `"filesystem"` を拒否し、uf は `"@uniflowed/server/cache/kv"`（Workers KV、`UF_CACHE` にバインド）を出荷しています。**Cache API ではなく KV** なのは、プロバイダの継ぎ目がタグやパスで埋められた全エントリを見つけて無効化する必要があり、Cache API は持つものを列挙できず、データセンターごとだからです。代償は KV のもの: 書き込みが他拠点で見えるまで最大 1 分。
+
+## プリレンダリング済みページの再生成
+
+`uf build` がプリレンダリングし寿命を宣言するページは、ビルドから始まったルートキャッシュです（ISR）。詳細は [レンダリングモード](/app/rendering#isr-再生成されるページ)。要点: 最初のリクエストはビルドのドキュメント（寿命内は `HIT`、過ぎれば `STALE`）、再生成ページは時計で配信不能になることはなく、`revalidateTag` / `revalidatePath` は走った時刻も書き留めるので、あとから来たプロセスもビルドの古いコピーではなく描画します。
+
+## 何の価値があるか
+
+loader に 50 ms かかる 1 ページ、Node 24、M 系ラップトップ:
+
+| | 1 回目 | 2 回目 | ペアあたり描画 | 同時 10 の描画 |
+| --- | --- | --- | --- | --- |
+| キャッシュなし | 52.35 ms | 52.41 ms | 2 | 10 |
+| ルートキャッシュ | 52.45 ms | 0.16 ms | 1 | 1 |
+
+冷えたリクエストはわずかに遅く、それがキャッシュされたルートの代償です。ドキュメントはエントリになる前に完全でなければならないので、fill はストリームせずバッファします。最後の列は中央値が見せられない半分。誰も求めていないページへの同時 10 リクエストは 1 描画です。fill 中に届いたリクエストは第 2 の fill を始めずに合流します。
+
+## ブラウザで
+
+上のすべてはサーバーの話です。クライアントルーターには独自のキャッシュが 1 つ: `app.rendering.staleTime`。デフォルト off で、`router.refresh()` とすべてのサーバーアクションがクリアします。
+
+## ここにないもの
+
+- データキャッシュとアクションキャッシュ。`rendering.cache.data` と `.actions` は無視ではなく拒否
+- `uf build --compile`。コンパイル済みバイナリはディレクトリではなく運ぶバイトから答えるので、キャッシュを持たず、再生成ページを毎リクエスト描画する

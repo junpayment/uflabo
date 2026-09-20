@@ -1,0 +1,181 @@
+---
+title: "ヘッドレスコンポーネント（@uniflowed/ui）"
+description: "ロービングタブストップ、フォーカストラップ、タイプアヘッド、ライブリージョン、フォーム配線、モーダル、テーブル。そしてそれぞれを真にする ARIA。スタイルは一切なし。"
+section: "app"
+order: 11
+source: "/guide/ui"
+---
+
+## 得るもの、得ないもの
+
+パッケージのルートは 30 以上のプリミティブファミリと 5 つの単一要素コントロールを export します。
+
+| ファミリ | 手を伸ばすとき |
+| --- | --- |
+| Field, Checkbox, Switch, RadioGroup, Toggle, ToggleGroup, Slider, InputOtp, Calendar, DatePicker | 値に名前を付け、検証し、変更し、送信し、告知する |
+| Dialog, AlertDialog, Sheet, Drawer, Sidebar, Popover, Tooltip, HoverCard, Collapsible, Accordion | ページの一部が現れ、消え、フォーカスを捕まえ、あるいは捕まえてはならない |
+| Tabs, Menu, ContextMenu, Menubar, NavigationMenu, Breadcrumb, Pagination, Carousel, ScrollArea | 移動が機能。パネル間、メニュー内、ページ間、スライド間 |
+| Combobox, Select, Table, Resizable, Progress, Toast, Alert, Avatar, Separator, Skeleton | ブラウザに関連プリミティブはあるが、より豊かな契約が必要 |
+
+正しいロールと関係を持つセマンティック要素を描画し、プラットフォーム自身のコントロールと同じようにキーボードを処理し、**見た目についてはいかなる意見も持ちません。**
+
+モックアップの形ではなく、インタラクションから始めます。
+
+| ユーザーがしていること | 始めるべきもの |
+| --- | --- |
+| 閉じたリストから 1 値を選ぶ | テキストが固定なら Select、打つ・絞るなら Combobox |
+| 1 面内のパネル間を移動 | Tabs、次に automatic か manual の活性化を選ぶ |
+| ページレベルの中断を開く | Dialog。破壊的か答え必須のときだけ AlertDialog |
+| 端から狭い面を開く | Sheet。ドラッグジェスチャがあるなら Drawer |
+| 小さいアンカーされた面を出す | フォーカス可能な内容なら Popover、一句なら Tooltip、リンク付きプレビューなら HoverCard |
+| 展開グループの後ろのサイト行き先一覧 | NavigationMenu（Menu ではない。リンクはリンクのまま） |
+| アプリのコマンド一覧 | Menu / ContextMenu / Menubar |
+| コントロールとそのエラーに名前を付ける | Field。コントロール自体が他所から来ても |
+
+スタイルシートも theme prop も StyleX import もありません。要素を描画するすべてのパートは渡されたものをそのまま spread するので、`className` `id` `data-*` `aria-*` はすべて届きます。`className` が橋です。DOM の prop であり、スタイリングライブラリの型ではないので、uf 自身のプリセットがパッケージに知られずにこれらをスタイルできます。
+
+## 所有かヘッドレスか
+
+uf はデザインシステムの両半分を持ち、それらは別の種類のものです。`@uniflowed/ui` はパッケージ: import し、アップグレードし、決してコピーしない。`uf ui add` はもう半分をリポジトリに書きます。`app/components/ui/` に 1 スタイル付きコンポーネント 1 ファイル、これらのパートの上に組まれたもの。
+
+```sh
+uf ui add button dialog tabs select
+```
+
+| | ヘッドレス: `@uniflowed/ui` | 所有: `uf ui add` |
+| --- | --- | --- |
+| どこに住むか | `node_modules`、uf でアップグレード | `app/components/ui/`、コードと共にコミット |
+| 何を所有するか | ロール、キーボード、フォーカス、ARIA 配線、合成の型 | 見た目: トークン、余白、バリアント、パートの周りのマークアップ |
+| どう変えるか | `className`、`render`、data 属性 | ファイルを編集 |
+| 修正がどう届くか | `@uniflowed/ui` のアップグレード | 挙動は `@uniflowed/ui` のアップグレード（ファイルは依然 import する）。見た目は `uf ui diff` と自分の編集、または `uf ui add --overwrite` |
+
+2 つは互いのフォークではありません。所有 `dialog.js` はパートを `@uniflowed/ui` から import するので、フォーカストラップ、Escape、フォーカス復帰、背後の inert なページはアップグレードで届き続けます。合成制約もコピーで保たれます。所有 `TabsList` は `renders* TabsTab` を取るので、そこに落とした `<button>` はあなた自身のファイルでの Flow エラーです。
+
+コピーは出所を記憶します。最終行が書いた uf と内容のダイジェストを名指しするので、`uf ui add` は誰かが編集したファイルを `--overwrite` なしに置き換えず、`uf ui diff` は差分があなたの編集か、レジストリの変更か、両方かを言います。
+
+## パートが描画する要素を変える
+
+`render` は「これは `<a>` でなければならない」を何もコピーせずに言う方法です。
+
+```js
+<Menu.Item render={(props) => <a href="/settings" {...props} />}>Settings</Menu.Item>
+```
+
+パートはすべての属性・id・合成ハンドラ・ref を通常通り計算し、あなたが自分の要素に置くために渡します。`<a>` として描画された `Menu.Item` は依然パートであり、`Menu.Body` の `renders*` 制約が受け入れるもの。それはコピーしたソースには保てない性質です。
+
+render 関数はパートを動かす props を受け取り、**1 つの要素に spread すべき**で、その要素がパッケージにとってのパートになります。
+
+- **uf にセマンティクスを所有させたいなら最後に spread する。** 先に spread して後で `role` を書くのはスタイルではなく上書き。
+- **フォーカス可能な要素は 1 つに。** button を包む anchor を返す render 関数は、パートが 1 つを約束した場所に 2 つのコントロールを生む。
+- **返す要素はパートがマウントされた場所に置く。** portal に動かすと id と ref が推測になる。
+- **`event.preventDefault()` がオプトアウトのスイッチ。** 呼び出し側のハンドラが先に走り、default を防げばコンポーネントのハンドラは引く。
+
+## Field
+
+ラベル、コントロール、説明文、エラーメッセージが互いに配線されます。コントロールはあなたが描画するものです。
+
+```js
+<Field.Root invalid={error != null}>
+  <Field.Label>Email</Field.Label>
+  <Field.Control render={(props) => <input type="email" {...props} />} />
+  <Field.Description>We will not share it.</Field.Description>
+  <Field.Error>{error}</Field.Error>
+</Field.Root>
+```
+
+`Field.Control` は children ではなく render 関数を取り、`id` `aria-labelledby` `aria-describedby` `aria-invalid` を渡します。
+
+それぞれテスト付きで、やらない 3 つ: `aria-invalid` はフィールドが有効なとき `"false"` ではなく**不在**。`aria-describedby` は存在する id だけを名指す。ラベルに渡したあなたの `id` はフィールドのものに負ける（呼び出し側の id はラベルとコントロールの関係を、見えないまま壊すから）。
+
+## Tabs
+
+```js
+<Tabs.Root defaultValue="one">
+  <Tabs.List aria-label="Sections">
+    <Tabs.Tab value="one">One</Tabs.Tab>
+    <Tabs.Tab value="two">Two</Tabs.Tab>
+  </Tabs.List>
+  <Tabs.Panel value="one">…</Tabs.Panel>
+  <Tabs.Panel value="two">…</Tabs.Panel>
+</Tabs.Root>
+```
+
+| キー | 何が起きるか |
+| --- | --- |
+| ArrowRight / ArrowLeft | 次 / 前のタブ、ラップする |
+| ArrowUp / ArrowDown | `orientation="vertical"` のとき同じ |
+| 横リストでの ArrowDown | 何もしない。ページがスクロールする |
+| Home / End | 最初 / 最後の有効なタブ |
+| Enter / Space | manual モードで選択 |
+| Tab | 1 押しでリストを離れる |
+
+automatic 活性化（デフォルト）では矢印キーがフォーカスを動かして選択します。manual では動かすだけで、Enter か Space までパネルは変わりません。無効なタブは `role="tab"` を保ち `aria-disabled` を得ます。決してネイティブの `disabled` 属性ではなく、アクセシビリティツリーに残って矢印にスキップされます。
+
+## Dialog
+
+```js
+<Dialog.Root>
+  <Dialog.Trigger>Delete</Dialog.Trigger>
+  <Dialog.Overlay />
+  <Dialog.Body>
+    <Dialog.Header>
+      <Dialog.Title>Delete this project?</Dialog.Title>
+      <Dialog.Description>This cannot be undone.</Dialog.Description>
+    </Dialog.Header>
+    <Dialog.Footer>
+      <Dialog.Close>Cancel</Dialog.Close>
+    </Dialog.Footer>
+  </Dialog.Body>
+</Dialog.Root>
+```
+
+開くとフォーカスは「操作する価値のある最初のもの」へ。末尾の Tab は先頭にラップし、Escape は閉じてトリガーにフォーカスを返し、外側の押下は閉じ、内側は閉じません。開いている間、ページの他すべては `aria-hidden="true"` と `inert` になり body のスクロールが止まり、閉じるとちょうど元に戻ります（参照カウントされるので、積まれた 2 つのダイアログの内側が閉じても外側はページを止め続けます）。
+
+知っておくべき 3 つの決定: **portal しない**（スタッキングコンテキストの問題は CSS に属し、書かれた場所に描画されればダイアログはアクセシビリティツリーでトリガーの隣にいる）。`Dialog.Header` は `header` ではなく `div`（ダイアログ内の第 2 の banner ランドマークは説明不能）。`Dialog.Overlay` は挙動を持たない（外側押下で閉じるのはダイアログのもの）。
+
+## Menu
+
+矢印キー、Home / End、500 ms バッファのタイプアヘッド、サブメニュー、そして 1 レベルを閉じる 1 つの Escape。メニューは `aria-activedescendant` ではなく本物のフォーカスを項目に動かします。**ホバーでサブメニューは開きません。** 意図的に。「安全な三角形」のような意図のヒューリスティックなしに `onPointerEnter` で即開くのは、ホバーなしより悪いからです。
+
+## Combobox
+
+```js
+<Combobox.Root inputValue={query} onInputValueChange={setQuery}>
+  <Combobox.Label>Country</Combobox.Label>
+  <Combobox.Input />
+  <Combobox.List>
+    {matches.map((each) => <Combobox.Option key={each} value={each}>{each}</Combobox.Option>)}
+  </Combobox.List>
+  <Combobox.Empty>No matches.</Combobox.Empty>
+  <Combobox.Status />
+</Combobox.Root>
+```
+
+**決してフィルタしません。** 選択肢はあなたが描画したものであり、`inputValue` と照合するのはアプリのロジックです。combobox に組み込まれたフィルタは、データがリモートになるか、あいまい検索になるか、グループ化された最初の日に戦うことになるものだからです。
+
+`Combobox.Status` は最初からマウントされる `role="status"` 領域です（言うことができた瞬間に追加される告知領域は何も言わない領域）。「No results available.」「3 results available.」と数えてくれます。コンポーネント全体が組まれる不変条件は「名指した選択肢がフィルタで消えたらハイライトを落とす」。`aria-activedescendant` はドキュメントから消えた瞬間に外され、決して存在しない要素を指しません。
+
+コマンドパレットは Dialog + Combobox + `useKeyCombo` です。だから `Command` コンポーネントはありません。
+
+## Checkbox と Switch
+
+```js
+<Checkbox checked={checked} onCheckedChange={setChecked}>Ship it</Checkbox>
+<Switch checked={on} onCheckedChange={setOn}>Notifications</Switch>
+```
+
+2 つのコンポーネントである理由は第 3 の状態です。チェックボックスは checked / unchecked / **mixed**（行の一部が選ばれた「すべて選択」が言うこと）で、スイッチは on / off で置く場所がありません。
+
+| キー | Checkbox | Switch |
+| --- | --- | --- |
+| Space | トグル | トグル |
+| Enter | **フォームを送信** | トグル |
+
+スイッチは何かを操作するので Enter で操作します。チェックボックスは送信ボタンへの途上の質問に答えるもので、ネイティブ `<input type="checkbox">` の Enter は implicit submission です。長い間ヘッダの主張はそうでしたが両半分とも真ではなく（#324）、今は両キーが両コンポーネントで処理・防止されます。
+
+## パッケージ全体で成り立つ 4 つのルール
+
+- **どの属性も欠けている要素を名指さない。** テストファイルのヘルパーがドキュメント内のすべての `aria-labelledby` `aria-describedby` `aria-controls` `aria-activedescendant` を歩き、名指す id が存在することを検証します。スイート中もっとも価値のあるアサーションです。ぶら下がった参照は壊れて見えず、ただスクリーンリーダーに何も言わせない。
+- **1 つの Escape は 1 つの dismissal。** ダイアログ内のメニューはメニューを閉じ、ダイアログは開いたまま。
+- **あなたの props はコンポーネントを無効化しない。** ref を渡してもコンポーネントは自分のを得る。`onKeyDown` / `onClick` を渡せばあなたのが先に走り、コンポーネントの挙動も起きる。
+- **キーボードはレジストリではなく DOM を読む。** ロービングフォーカスはドキュメントに「どの項目があるか」を尋ねます。リストがフィルタや並べ替えされた瞬間、マウント順はドキュメント順でなくなるから。

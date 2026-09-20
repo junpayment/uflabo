@@ -1,0 +1,256 @@
+---
+title: "リクエストに答える"
+description: "ミドルウェア、ルートハンドラ、ドラフトモード、QUERY メソッド、そしてストリーム・ソケット・レスポンスより長生きする仕事。"
+section: "app"
+order: 3
+source: "/guide/routing/requests"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+ルートの大半はページを描画します。このページは**リクエストに直接答える**部分です。
+
+## ミドルウェア
+
+`app/dashboard/$middleware.js` は `/dashboard` 配下が答える前に走ります。ページも、ルートハンドラも、何にもマッチしないパスも。
+
+```js
+// @flow
+import { cookies } from "@uniflowed/server";
+
+export default function middleware(request: Request): Response | void {
+  if (cookies().get("session") == null) {
+    return Response.redirect(new URL("/sign-in", request.url), 302);
+  }
+}
+```
+
+`Response` を返せばそれが答えです。その後は何も走りません。何も返さなければ続行します。両方が重要で、観察しかできないミドルウェアは拒否できず、答えなければならないミドルウェアはロガーになれません。
+
+**matcher を書く必要はありません。** ファイルのあるディレクトリがガードするパスで、ミドルウェアはレイアウトと同じようにツリーを下って合成されます。ルートの `app/$middleware.js` が全リクエストに走り、次に `app/dashboard/`、次に `app/dashboard/admin/`。最初に `Response` を返したものが勝ちます。
+
+ミドルウェアはリクエストの中で走るので、`cookies()` `headers()` `after()` が何も通さずに使えます。パスパラメータは `context.params` に届きます。ミドルウェアモジュールはブラウザには決して届きません。
+
+### リライト
+
+```js
+// @flow
+import { cookies } from "@uniflowed/server";
+import { rewrite } from "@uniflowed/router/middleware";
+
+export default function middleware(request: Request) {
+  if (cookies().get("beta") != null) {
+    return rewrite(`/beta${new URL(request.url).pathname}`);
+  }
+}
+```
+
+`rewrite(destination)` を返すと別のパスで続行します。アドレスバーは要求されたまま、`useRoute()` は描画されたルートを記述します。チェーンは destination に対してルートから再開するので、`/admin` へのリライトは `/admin` のガードにきちんと出会い、どのミドルウェアも 1 リクエストで 2 度走りません。別オリジンは拒否されます。
+
+### プリレンダリングされたページはガードされたページではない
+
+ミドルウェアはサーバーでリクエストが届いたときに走ります。`uf build` はパラメータなしの全ルートを HTML ファイルにプリレンダリングし、静的ホストは誰にも尋ねずそのファイルを配信します。**ガードは存在しません。** ガードしたいパスはプリレンダリングから外す（パラメータを与えるか、`dist/` だけでなくサーバーバンドルを配信する）か、`dist/` で開けるものはすべて公開だと扱ってください。
+
+## ルートハンドラ
+
+パスは描画する代わりにリクエストに答えられます。`app/api/users/[id]/$route.js` が `/api/users/42` を配信します。
+
+```js
+// @flow
+import type { HandlerContext } from "@uniflowed/router/handler";
+
+export async function GET(request: Request, context: HandlerContext): Promise<Response> {
+  const user = await find(context.params.id);
+  return user == null
+    ? new Response("not found", { status: 404 })
+    : Response.json(user);
+}
+
+export async function POST(request: Request, context: HandlerContext): Promise<Response> {
+  return Response.json(await request.json(), { status: 201 });
+}
+```
+
+ハンドラは `Request` を取り `Response` を返します。フレームワークのラッパーではなくプラットフォームの型です。だから Node / Bun / Deno / Cloudflare Worker で変更なしに動きます。
+
+ハンドラには配信するものが必要です。`uf dev` `uf preview` `uf start` `uf build --compile` のバイナリはすべてディスパッチしますが、素の静的ファイルサーバーに渡した `dist/` はしません。**これがハンドラ中心の設計をする前に知るべき 1 つのこと**であり、`uf preview` が存在する理由です。
+
+メソッドごとに 1 export: `GET` `HEAD` `QUERY` `POST` `PUT` `PATCH` `DELETE` `OPTIONS`。それ以外の export はヘルパーであり、メソッドではありません。
+
+ルートハンドラはメソッドの横にリクエストとレスポンスのスキーマを宣言でき、`uf build` はそれを読んで `.uf/build/meta/openapi.json` を書きます。
+
+```js
+// @flow
+import { object, string } from "@uniflowed/validator";
+
+export const schemas = {
+  GET: { response: object({ status: string() }) },
+  POST: { body: object({ name: string() }), response: object({ echoed: string() }) },
+};
+```
+
+ディスパッチャがすべてのハンドラの代わりにやる 3 つ: `HEAD` は body を落とした `GET` にフォールバック、405 は `Allow` を運ぶ、最も具体的なパスが勝つ（`/api/users/new` > `/api/users/[id]` > `/api/[...rest]`）。
+
+意図的にやらないこと: **あなたのエラーを捕まえること。** throw するハンドラはバグで、ここで 500 に変えるとホストのエラー報告から隠してしまいます。
+
+## ドラフトモード
+
+CMS は、ドラフトモードをオンにしてリダイレクトするルートハンドラにリンクして未公開コンテンツをプレビューします。以後の全リクエストは署名付き Cookie を運び、`draftMode().isEnabled` はリクエスト全体で true になり、ルートキャッシュも `dist/` のプリレンダリング済みドキュメントもそれに答えることを許されません。
+
+<Figure title="app/api/preview/$route.js">
+
+```js
+// @flow
+import { draftMode } from "@uniflowed/server";
+
+export function GET(request: Request): Response {
+  const url = new URL(request.url);
+  if (url.searchParams.get("token") !== process.env.CMS_PREVIEW_TOKEN) {
+    return new Response("no", { status: 401 });
+  }
+  draftMode().enable();
+  return Response.redirect(new URL(url.searchParams.get("to") ?? "/", request.url), 307);
+}
+```
+
+</Figure>
+
+`enable()` と `disable()` はルートハンドラかサーバーアクションにだけ置けます。Cookie を書き、Cookie はレスポンスの一部だからです。render やミドルウェアから呼ぶと `DraftModeError` になります。
+
+**トークンチェックはあなたのもの。** uf は Cookie が自分の発行したもので期限内であることは検証しますが、誰が頼んだかは検証できません。チェックのないプレビューハンドラは、サイトの未公開物すべてへの開いた扉です。
+
+Cookie は `__Host-` プレフィックス、Secure、HttpOnly、SameSite=Lax、1 時間有効で、値は自身の期限に対する HMAC。鍵は `UF_DRAFT_SECRET`（32 バイト以上、デプロイの全インスタンスで共有）。なければプロセスごとに生成され、`uf dev` では正しく、ロードバランサの後ろでは間違いです。
+
+## QUERY: URL に収まらなかった GET
+
+`QUERY` は body を運ぶ、安全で冪等なメソッドです。フィルタ付きの検索が 20 年間 POST で偽装してきたもので、違いは見かけではありません。POST は安全ではないので、何も retry・prefetch・cache できません。
+
+<Figure title="app/api/search/$route.js">
+
+```js
+// @flow
+export async function QUERY(request: Request): Promise<Response> {
+  const filters = await request.json();
+  return Response.json(await search(filters));
+}
+```
+
+</Figure>
+
+```js
+import { createFetch } from "@uniflowed/fetch";
+
+const api = createFetch({ baseURL: "/api" });
+const hits = await api.request("/search", { method: "QUERY", body: { filters } });
+```
+
+uf の中でこれを拒否するものはありません。拒否するのは途中の経路です。動詞のリストを持つ proxy / CDN / ファイアウォールは自ら 405 や 501 を返し、`@uniflowed/fetch` はステータスを素通しせずエラーでそう言います。`<form>` `XMLHttpRequest` `EventSource` は送れません。`fetch` は送れます。
+
+**メソッドオーバーライドヘッダはなく、今後もありません。** `X-HTTP-Method-Override: QUERY` は CVE-2025-29927 の形（受信ヘッダがディスパッチを操る）で、`docs/security.md` が禁じています。制御できないインフラを通さなければならないルートは、自分のファイルに `POST` も export します。
+
+## ストリーム、ソケット、レスポンスより長生きする仕事
+
+ハンドラは `Response` を返し、その body はストリームでよいので、Server-Sent Events にルーターからの新しいものは不要です。
+
+<Figure title="app/api/progress/$route.js">
+
+```js
+// @flow
+import { eventStream } from "@uniflowed/server/events";
+
+export function GET(): Response {
+  return eventStream((sink) => {
+    const timer = setInterval(() => sink.send({ event: "tick", data: stateOfPlay() }), 1000);
+    return () => clearInterval(timer);
+  });
+}
+```
+
+</Figure>
+
+`eventStream` はフォーマットを書き、proxy がストリーム全体をバッファするのを止める 4 つのヘッダを設定し、ハートビートを送り、遅れすぎた読者を切断します。`@uniflowed/hooks/events` の `useEventSource` が反対側です。
+
+WebSocket は `Upgrade: websocket` の付いた GET なので、これもハンドラです。
+
+<Figure title="app/api/room/[id]/$route.js">
+
+```js
+// @flow
+import { upgradeWebSocket } from "@uniflowed/server/socket";
+
+export function GET(request: Request, context: HandlerContext): Response {
+  const { response, socket } = upgradeWebSocket(request);
+  socket.addEventListener("message", (event) => socket.send(String(event.data)));
+  return response;
+}
+```
+
+</Figure>
+
+uf はアップグレードを定義し、あなたのデプロイがそれを供給します。Deno / Bun / Cloudflare はソケットの取り方をそれぞれ違って綴り、Node にはサーバー側 WebSocket がありません。uf が所有するのはそれらが還元される形（`Request` → `{ response, socket }`）だけです。
+
+レスポンスより長生きすべき仕事はジョブです。
+
+```js
+// @flow
+import { defineJob, enqueue } from "@uniflowed/server/queue";
+
+export const sendWelcome = defineJob({
+  name: "send-welcome",
+  retry: { attempts: 5 },
+  run: async (payload) => mail(payload.to),
+});
+
+export async function POST(request: Request): Promise<Response> {
+  const user = await create(await request.json());
+  await enqueue(sendWelcome, { to: user.email });
+  return Response.json(user, { status: 201 });
+}
+```
+
+uf はジョブ、ペイロード境界、リトライポリシーとバックオフ、そしてこのプロセスで動く 1 つのバックエンドを提供します。デプロイが提供するのは設定フラグでは得られない 2 つ: 再起動を越えるストレージと、リクエストが来ていないときも存在するコンシューマ。`memoryQueue` は配列で、`durable: false` と自己申告します。配信は at least once なので、カード決済するジョブには自分の冪等キーが必要です。
+
+キューは `after()` ではありません。`after()` はレスポンス送信後にこのプロセスでコールバックを走らせ、リトライも記録もありません。メトリクスには正しく、ユーザーが欠けを気づくものには間違いです。
+
+どのリクエストも始めない仕事はスケジュールです。
+
+```js
+// @flow
+import { defineSchedule } from "@uniflowed/server/schedule";
+
+const sweep = defineSchedule({
+  name: "sweep-sessions",
+  cron: "*/15 * * * *",
+  run: async () => expireSessions(),
+});
+```
+
+式は 5 フィールドで、すべての cron が合意する構文だけ（`*`、`n`、`a-b`、`*/n`、リスト）。`@daily` も `JAN/MON` も秒も `L/W/#` もありません。フィールドは UTC です。
+
+ルートハンドラは、いつ自分が呼ばれるべきかを言うこともできます。
+
+<Figure title="app/api/sweep/$route.js">
+
+```js
+// @flow
+export const schedule = "*/15 * * * *";
+
+export function GET(): Response {
+  return Response.json({ swept: true });
+}
+```
+
+</Figure>
+
+ファイルに書かれた文字列であり、呼び出しではありません。`uf build --adapter edge` はこれを Cloudflare のスケジューラ用に `wrangler.json` へ書きます。node / bun / container はプロセスを保つのでプロセス内で tick します。serverless は拒否します（zip の中に「いつ呼ぶか」を書く場所がない、#531）。
+
+### 各ターゲットができること
+
+| ターゲット | ストリーム | レスポンス後も生存 | イベントストリーム | WebSocket | プロセス内キュー | プロセス内スケジュール |
+| --- | --- | --- | --- | --- | --- | --- |
+| uf dev / preview / start | ○ | ○ | ○ | アップグレーダがあれば | ○ | ○ |
+| node / bun / container / --compile | ○ | ○ | ○ | アップグレーダがあれば | ○ | ○ |
+| edge | ○ | × | ○ | アップグレーダがあれば | 拒否 | 拒否 |
+| serverless | × | × | 拒否 | 拒否 | 拒否 | 拒否 |
+
+「拒否」はホストの配線時点、接続を 1 つも受け付ける前の拒否です。

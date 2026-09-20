@@ -1,0 +1,215 @@
+---
+title: "フォーム（@uniflowed/form）"
+description: "React Hook Form の機能リストを、Proxy なしで。非制御入力、狭い購読、型付きの値、配線済みのアクセシブルなエラー。そして本家がゼロにする場所で 1 回描画する、その理由。"
+section: "app"
+order: 9
+source: "/guide/form"
+---
+
+## フォーム
+
+```js
+"use client";
+// @flow
+import { useForm } from "@uniflowed/form";
+
+export component SignUp() {
+  const { register, handleSubmit, errorProps, formState } = useForm({
+    defaultValues: { email: "" },
+    mode: "onBlur",
+  });
+
+  return (
+    <form onSubmit={handleSubmit((values) => save(values))}>
+      <label htmlFor="email">Email</label>
+      <input
+        id="email"
+        {...register("email", {
+          required: "An email address is required",
+          pattern: { value: /@/, message: "That is not an email address" },
+        })}
+      />
+      {formState.errors.email != null && (
+        <p {...errorProps("email")}>{formState.errors.email.message}</p>
+      )}
+      <button type="submit">Join</button>
+    </form>
+  );
+}
+```
+
+`register(name, rules)` は非制御入力に必要な props を返します。`name`、`ref`、change と blur のハンドラ、そして**フィールドが失敗した後だけ** `aria-invalid="true"` と `aria-describedby`。`errorProps(name)` は対応する `id` と `role="alert"` を返します。
+
+このペアは React Hook Form に相当物がなく、代替が「何もないより悪い」から存在します。描画されていない要素を指す `aria-describedby` は、スクリーンリーダーに何も読ませません。id は `useId` から来るので、同じフォームが 1 ページに 2 つあっても衝突しません。
+
+`mode` はフィールドが最初に判定されるタイミング（`"onSubmit"`（デフォルト）/ `"onBlur"` / `"onChange"` / `"onTouched"` / `"all"`）、`reValidateMode` は一度失敗した後の挙動（デフォルト `"onChange"`）を決めます。
+
+## useForm が返すもの
+
+`register` `unregister` `errorProps` `handleSubmit` `watch` `getValues` `setValue` `getFieldState` `reset` `setError` `clearErrors` `trigger` `setFocus` `formState` `control`。
+
+`formState` は `errors` `isDirty` `dirtyFields` `touchedFields` `isSubmitting` `isSubmitted` `isSubmitSuccessful` `isValidating` `isValid` `submitCount` `disabled` `isLoading` `defaultValues` を持ちます。
+
+**エラーはフラットで、登録した文字列でキーされます。**
+
+```js
+formState.errors["profile.city"]; // formState.errors.profile.city ではない
+```
+
+Flow にはパスに対する mapped type がないので、「`items.0.name` のエラー」をネストした形では綴れません。フラットなマップが真である版です。
+
+## フィールドをその型で読む
+
+ドットつきのパスは文字列で、文字列は値の形に対してチェックできません（Flow に template literal type はない）。セグメントで与えたパスはチェックできます。
+
+```js
+const { getValues, setValue, watch, getFieldState } = useForm({
+  defaultValues: { email: "", address: { city: "", zip: 0 }, items: [{ price: 0 }] },
+});
+
+getValues("address", "city");        // string
+watch("items", 0, "price");          // number
+setValue(["items", 0, "price"], 12); // 12 は number でなければならない
+getFieldState("address", "city");    // パスがチェックされる
+
+getValues("address.city");           // 動くが、mixed
+```
+
+何も注釈していません。`TValues` は `defaultValues` から推論され、すべての読み取りはそこから推論されます。制限: **4 セグメントまで**（`items.0.tags.0` に届く。5 つ目は `mixed`、#300）。最初のセグメントがキーでなければドット形にフォールバック。`watch(["a", "b"])` はパスではなく 2 フィールド（React Hook Form と同じ）。`useWatch` は hook 宣言が 1 シグネチャしか持てないので `path` を取ります。
+
+## 後から届く値
+
+編集フォームは最初の描画時に値を知らないことが多い。3 つの選択肢があり、どれも `useEffect` を必要としません。
+
+```js
+// レコードを fetch する。フォームは即座に描画され（空、dirty でない、isLoading true）、届いたら値を取る
+useForm({ defaultValues: () => fetchRecord(id) });
+
+// レコードは他の何か（クエリキャッシュ、atom、リストの選択行）が所有し、フォームはそれに従う
+useForm({ values: record, resetOptions: { keepDirtyValues: true } });
+
+// サーバーが submit を拒否し、どのフィールドかを言った
+useForm({ errors: rejection });
+```
+
+`values` は与えられたオブジェクトが変わるとフォームを再シードします。書くはずだった `reset` を呼ぶ `useEffect` を、同じ commit の時点で、古い値の描画なしにやるものです。`resetOptions` が再シードで何が生き残るかを言います（`keepDirtyValues`、`keepErrors` / `keepIsValid`）。
+
+`isReady` はありません。React Hook Form にあるのは、そのフォームが最初の描画の後にセットアップを終えるからで、こちらのストアは `useState` 初期化子で組まれるので最初のスナップショットがすでに本物です。
+
+## ルール
+
+7 つのバリデータ（`required` `min` `max` `minLength` `maxLength` `pattern` `validate`）、3 つの変換（`valueAsNumber` `valueAsDate` `setValueAs`）、そして他のフィールドに依存するフィールド用の `deps`。
+
+```js
+register("age", { valueAsNumber: true, min: { value: 18, message: "18 or over" } });
+register("confirm", {
+  deps: ["password"],
+  validate: (value, values) => value === values.password || "The passwords differ",
+});
+```
+
+3 つの決定: **空の値は `required` と `validate` 以外の全ルールをスキップ**（空のパスワードに「8 文字以上」は真だが無用）。**`false` は空ではない**（未チェックのチェックボックスは yes/no への本物の答え）。**フィールドごとに最初の失敗だけ報告**。
+
+## ルールの代わりにスキーマ
+
+```js
+import { useForm, validatorResolver } from "@uniflowed/form";
+import { email, minLength, object, pipe, string } from "@uniflowed/validator";
+
+const account = object({
+  email: pipe(string(), email()),
+  profile: object({ city: pipe(string(), minLength(2)) }),
+});
+
+component Account() {
+  const { register, handleSubmit } = useForm({
+    defaultValues: { email: "", profile: { city: "" } },
+    resolver: validatorResolver(account),
+  });
+  // ...
+}
+```
+
+スキーマは値なのでモジュールスコープで一度組み、`useForm` は hook なのでコンポーネント内。スキーマの issue は登録パスのフィールドエラーになり、`handleSubmit` のコールバックはフォームの入力型ではなくスキーマの出力型を受け取ります。resolver はインラインルールをマージするのではなく置き換えます（ルールはコントロールの読み方 `valueAsNumber` などは依然記述する）。
+
+## サーバーアクションへ送信
+
+有用な形は 2 つあり、別の仕事をします。ネイティブの `<form action={serverAction}>` は [Server Actions](/app/server-actions) のもので、React が submit を所有し、アクションは `FormData` を受け取り、`useActionState` が結果を所有します。`@uniflowed/form` が所有するのは別の形: クライアントで検証し、型付きの値を送信し、全フィールドの購読とエラーメッセージをフォームストアに保つ。
+
+```js
+const submit = handleSubmit((values) => {
+  startTransition(async () => {
+    const result = await saveProfile(values);
+    if (!result.ok && result.fields.email != null) {
+      setError("email", { type: "server", message: result.fields.email });
+    }
+  });
+});
+```
+
+`handleSubmit` はネイティブ submit を防ぎ、resolver が現在値を受け入れた後だけアクションを呼びます。アクションは依然権威で、同じスキーマがサーバーで再度走り、サーバーだけが知れること（すでに使われているメール、期限の切れた権限）は `setError` を通じて戻り、同じ `errorProps` 配線がそれを告知します。
+
+**このフォームから `FormData` をアクションに渡さないでください。** resolver が組んだ型付き出力を捨て、変換を submit ハンドラから見えなくし、未チェックの全フィールドを文字列の形で送ることになります。
+
+## 値が描画される場所で購読する
+
+これが性能の話で、React Hook Form とは違う話です。
+
+```js
+component Total(control: mixed) {
+  const value = useWatch({ control, name: "title" });
+  return <output>{String(value ?? "")}</output>;
+}
+
+component Status(control: mixed) {
+  const { isDirty } = useFormState({ control, name: "title" });
+  return <p>{isDirty ? "changed" : "untouched"}</p>;
+}
+```
+
+計測（1 フィールドに 6 文字打つ、コンポーネントごとに数える）:
+
+| コンポーネント | 描画回数 |
+| --- | --- |
+| `useForm` の所有者（register, formState） | 2 |
+| `useWatch` で title を購読する `Total` | 7 |
+| `useState` と制御入力、1 コンポーネント | 7 |
+
+所有者の 2 回はマウントと、フォームが最初に dirty になった瞬間。以後 5 打鍵はコストゼロ。`Total` の 7 回は欠陥ではなく、変わった値を表示するコンポーネントは描画しなければなりません。**購読が決めるのは「誰が描画するか」であり「どれくらい頻繁か」ではない。** 30 フィールドのフォームに 1 つの `useWatch` があれば、フォーム 2 回と `<output>` 7 回で、フォーム 7 回ではありません。
+
+React Hook Form は、描画がどの `formState` キーを読んだかを記録する Proxy で所有者の 2 回目をゼロにします。その技法は「描画が起きたこと」に依存し、それこそ React Compiler がスキップしてよいものです。だからこのパッケージは使わず、黙って遅い代わりにそう言います。
+
+## フィールドの配列
+
+```js
+const { fields, append, remove, move } = useFieldArray({ control, name: "items" });
+
+fields.map((field, index) => (
+  <input key={field.id} {...register(`items.${index}.name`)} />
+));
+```
+
+`append` `prepend` `insert` `remove` `swap` `move` `update` `replace`。`field.id` は全操作をまたいで安定したキーです。エラー・dirty・touched のフラグは行と共に再マップされます。
+
+## 制御コンポーネント
+
+自分の値を所有する入力（select、日付ピッカー、サードパーティのエディタ）には `Controller` が 1 つを結び付けます。`useController` は同じものの hook 版です。
+
+## 非同期バリデーション
+
+async な `validate` や resolver は想定されており、2 つが面倒を見られています。遅い答えが新しい答えを上書きすることはなく（シーケンス番号）、メッセージを返す代わりに reject する `validate` は飲み込まれず promise チェーンの外で再 throw されます。
+
+## React Hook Form から来る人へ
+
+| React Hook Form | ここ | 理由 |
+| --- | --- | --- |
+| Proxy の後ろの `formState` | 素のオブジェクト、dirty 遷移で 1 回描画 | Proxy は描画中の読み取りを記録し、React Compiler は描画をスキップしてよい |
+| `errors.profile.city` | `errors["profile.city"]` | Flow にパスの mapped type がない |
+| `FieldPath<T>` | ドット文字列は `mixed`、セグメントは 4 段まで型付き | Flow に template literal type がない |
+| resolver とルールが両方走る | resolver がバリデーションではルールを置き換える | ルールは依然コントロールの読み方を言う |
+| `useFormContext()` は provider 外で null | throw する | フォームのないフィールドは何にも配線されないコントロールを描画し、完全に正しく見える |
+| アクセシブルエラーのヘルパーなし | `register` + `errorProps` | 属性はペアでだけ正しい |
+
+**未実装:** `shouldUnregister`、`delayError`、フォームレベルの永続化、`criteriaMode: "all"`、`formState.isReady`、devtools。
+
+サーバー描画で驚く前に読むべき制限が 1 つ: `register` は入力に `ref` を与え、`ref` はサーバーで走らないので、`defaultValues` だけではサーバー描画 HTML に値が入りません。ハイドレーション前に値を見せるページはマークアップに入れてください（`<input defaultValue={record.email} {...register("email")} />`）。

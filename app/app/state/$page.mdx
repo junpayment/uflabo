@@ -1,0 +1,164 @@
+---
+title: "状態管理（@uniflowed/state）"
+description: "atom。モジュールスコープで宣言し、どこからでも読み書きでき、マウントする Provider はない。Jotai を知っていれば形は分かる。意図的に違うのは 4 つ。"
+section: "app"
+order: 8
+source: "/guide/state"
+---
+
+## 1 つのオーバーロードではなく 4 つのコンストラクタ
+
+Jotai はあらゆる種類の atom を `atom(...)` と綴り、引数からどれを意図したか判断します。TypeScript では呼び出し側で解決しますが、Flow では正直な版は「チェッカーが苦手な関数型の intersection」になり、しかも実行時に曖昧です。`atom(f)` は派生 atom と「関数を持つプリミティブ atom」を区別できません。
+
+だから 4 種類に 4 つの名前があります。
+
+```js
+import { action, atom, selector, writableSelector } from "@uniflowed/state";
+
+const count = atom(1);
+
+const doubled = selector<number>((get) => get(count) * 2);
+
+const bounded = writableSelector<number, number>(
+  (get) => get(count),
+  (get, set, next) => set(count, Math.max(0, next)),
+);
+
+const increment = action<number>((get, set, by) => set(count, get(count) + by));
+```
+
+Jotai の用語では `atom(value)`、`atom(read)`、`atom(read, write)`、`atom(null, write)` です。それぞれがちょうど 1 つの型を返すので、バインディングにできることは型に書かれています。`selector` は `ReadonlyAtom` を返し、書き込みは型エラーかつ atom を名指す実行時エラーです。
+
+上のどれもアロケートしません。atom は記述で、ストアが値を持つもの。どのストアにも触られていない atom はコストゼロです。
+
+## React なしで
+
+```js
+import { createStore, read, subscribe, write } from "@uniflowed/state";
+
+const store = createStore();
+const stop = subscribe(count, () => console.log(read(count, store)), store);
+
+write(count, 1, store);
+write(count, 2, store);
+stop();
+```
+
+`read` `write` `subscribe` は省略可能なストアを取り、省略すれば遅延生成されるデフォルトを使います。だからコンストラクタはテスト、loader、スクリプトですぐ使えます。
+
+## React で
+
+```js
+"use client";
+// @flow
+import { useAtomValue, useSetAtom } from "@uniflowed/state";
+
+component Controls() {
+  const bump = useSetAtom(count);
+  return <button type="button" onClick={() => bump((n) => n + 1)}>add</button>;
+}
+
+component Total() {
+  const shown = useAtomValue(doubled);
+  return <output>{shown}</output>;
+}
+```
+
+`useAtomValue` は購読し、`useSetAtom` は購読しません。書くだけのコンポーネントは値が変わっても再描画されません。`useAtom` はその組です。setter のアイデンティティはストアと atom ごとにキャッシュされ、尋ねる全コンポーネントで安定です。
+
+購読は `useSyncExternalStore` で、これは細部ではなくルールです。描画が観察できるものを何も変異させず、生きた可変オブジェクトを返す hook はなく、サーバースナップショットはクライアントと同じ関数なので、ハイドレーションは同じもの同士を比較します。
+
+`Provider` はサブツリーに独自のストアを与えます。リクエストごとに描画するサーバーが必要とするものです。モジュールスコープの状態はプロセスごとで、ある訪問者のストアが別の訪問者のものであってはなりません。Provider のないツリーはエラーではなくデフォルトストアを得ます。
+
+## 派生、合成、逃げ道
+
+```js
+const byId = atomFamily((id: string) => atom(`article ${id}`));
+byId("a") === byId("a"); // 同じ atom
+byId.remove("a");
+byId.size(); // 0
+
+const override = atomWithDefault<number>((get) => get(base));
+write(override, 99);    // 99 になる
+write(override, RESET); // base に従う状態に戻る
+
+const theme = atomWithStorage("theme", "light", storage);
+```
+
+`RESET` は文字列や `undefined` ではなく opaque なシンボルなので、値が文字列の atom が偶然「リセット」を意味するものを持つことはありません。永続化は購読ではなく書き込みに入っているので、atom がどこかにマウントされていることに依存しません。第 3 引数の `{ getItem, setItem, removeItem }` アダプタを省くと素の atom で、何も勝手に `localStorage` に手を伸ばしません。同じモジュールをサーバーで安全にするのはそれです。
+
+小さいものたち: `selectAtom`（atom の一部を選び、その部分が変わったときだけ起こす）、`atomWithReducer`（`useReducer` を atom に）、`atomWithReset`、`freezeAtom`（deep-freeze して in-place の変異をその場で失敗させる）、`useResetAtom`、`useAtomCallback`（どの atom も読み書きでき、どれも購読しないハンドラ）。
+
+## 非同期 atom は Suspense ではなく値
+
+Jotai の読者を捕まえる違いはこれです。
+
+```js
+const user = asyncAtom<string>(async (get) => fetchUser(get(userId)));
+```
+
+`user` の値は `Loadable`（`{ state: "loading" }` / `{ state: "hasData", data }` / `{ state: "hasError", error }`）で、コンポーネントがそれを描画します。
+
+```js
+component Name() {
+  const loadable = useAtomValue(user);
+  return match (loadable.state) {
+    "loading" => <p>…</p>,
+    "hasError" => <p>could not load</p>,
+    "hasData" => <p>{loadable.data}</p>,
+  };
+}
+```
+
+Jotai の非同期 atom はサスペンドします。こちらはできず、理由を言います。`useSyncExternalStore` の読者には、スナップショット内から promise を throw しない限り Suspense が使えず、それは並行レンダリング下ではサポートも安全もされていません。だからローディング状態は描画する値です。`unwrap(user, fallback)` が 3 ケースを書きたくないときの近道です。
+
+もう一度尋ねるには `refresh(user)`。フリー関数で、Jotai の `atomWithRefresh` のように atom を書き込み可能にはしません。`WritableAtom<T, A>` は `A` が引数型だと約束していて、引数のない refresh はそれを濁すからです。そしてフリー関数はルートハンドラやテストからも動きます。
+
+## 書き込みが何をするか
+
+すべての書き込みはバッチされます。3 つの atom を set するアクションは各購読者を 3 回ではなく 1 回起こします。書き込み内の `get` は追跡されません。書き込みは計算ではないからです。
+
+## 永続化された状態
+
+```js
+import { RESET, atomWithStorage, createJSONStorage } from "@uniflowed/state";
+
+const theme = atomWithStorage("theme", "light", createJSONStorage(() => localStorage));
+```
+
+thunk がこの行をサーバーが import するファイルで安全にします。Web Storage のないランタイムでは `localStorage` という識別子は定義されておらず、評価すれば `undefined` ではなく `ReferenceError` です。毎回 `try` の中で呼ばれるので、ランタイムが持たないストレージを名指すモジュールも import でき、全操作は初期値を返す no-op になります。
+
+**保存された値はマウント時に読まれます。** サーバーにはストレージがないので `initial` を描画します。ブラウザがモジュール評価中に `localStorage` を読めば、最初のクライアント描画は保存値になり、`initial` と言うマークアップとのハイドレーション不一致になります。だから読み取りは atom の `onMount`（React が commit 後に走らせる）で起きます。最初のクライアント描画はサーバーと同じ `initial`、保存値はその直後の描画で届きます。`{ getOnInit: true }` は、サーバー描画と一致させる必要のないアプリや、読むだけのルートハンドラ用に読み取りを初回使用時に移します。
+
+`RESET` はキーを削除します。`initial` に戻す set は `initial` を保存しますが、`RESET` はキーを消すので、「設定をクリア」は次のスキーマ変更が見つけるものを残しません。
+
+`createJSONStorage` の `revive` オプションで、読み戻した `any` をスキーマで検証できます。await が必要なストレージ（IndexedDB、React Native の AsyncStorage）には、値が `Loadable<T>` になる別のコンストラクタ `atomWithAsyncStorage` があります。
+
+## 下の層
+
+atom の下には `@uniflowed/cell` があります。atom がインスタンス化される依存グラフで、2 つのコンストラクタを持ち、ストアの概念がありません。
+
+```js
+import { derived, read, state, subscribe, write } from "@uniflowed/cell";
+
+const count = state(0);
+const doubled = derived(() => read(count) * 2);
+
+subscribe(doubled, () => console.log(read(doubled)));
+write(count, 21); // 42
+```
+
+cell は自分の値を持ち、それが違いのすべてです。atom はストアごとに異なる値を持つ定義で、cell は値そのもの。値がツリーではなくプロセスに属するとき（ルートの loader が cell を配る）は cell に、それ以外は atom に手を伸ばします。
+
+## Jotai から来る人へ
+
+| Jotai | ここ | 理由 |
+| --- | --- | --- |
+| `atom(value \| read \| read+write)` | `atom` `selector` `writableSelector` `action` | Flow はオーバーロード集合の解決が苦手で、`atom(f)` は実行時に曖昧 |
+| 非同期 atom はサスペンドする | 非同期 atom は `Loadable` 値 | `useSyncExternalStore` の読者は安全にサスペンドできない |
+| 独自の依存グラフ | `@uniflowed/cell` のもの | 依存追跡の 2 実装は 1 つ多い |
+| `atomWithStorage` はデフォルト `localStorage` | アダプタを渡さなければストレージなし | 同じモジュールがサーバーで安全でなければならない |
+| `atomWithRefresh` が atom を書き込み可能にする | フリー関数 `refresh(atom, store?)` | `WritableAtom<T, A>` は `A` が引数だと約束している |
+| `atomFamily(create, areEqual?)` | `atomFamily(create)` + `remove` + `size` | キーはアイデンティティ比較。コンパレータは毎描画新しいオブジェクトでキーする family を招く |
+
+未実装（それぞれ理由つき）: `atomWithLazy`（`atomWithDefault` がまさにその関数を取る）、`useHydrateAtoms`（描画中に共有状態へ書く）、`splitAtom`（ストアのモデルを変えることになる）、`atomWithObservable`（`onMount` は最初の購読者で走り最後で止まるので、依存変化で再実行する mount が必要）。

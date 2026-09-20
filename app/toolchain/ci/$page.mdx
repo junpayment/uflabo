@@ -1,0 +1,206 @@
+---
+title: "CI で uf を動かす"
+description: "GitHub Actions、GitLab CI、CircleCI。どれもツールチェーンをインストールする 1 ステップで、どれも薄い。3 つとも人間が走らせるのと同じインストーラを走らせるから。"
+section: "toolchain"
+order: 8
+source: "/guide/ci"
+---
+
+uf は 1 つのバイナリです。パイプラインはそれをビルドせず、取得するためにパッケージマネージャを入れず、周りにツールチェーンを設定しません。リリースをダウンロードし、3 つの名前を PATH に置き、`uf check` を走らせます。
+
+| システム | ファイル |
+| --- | --- |
+| GitHub Actions | `integrations/github-actions/action.yml` |
+| GitLab CI | `integrations/gitlab/uf.gitlab-ci.yml` |
+| CircleCI | `integrations/circleci/orb.yml` |
+
+## GitHub Actions
+
+```yaml
+name: CI
+on: [push, pull_request]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ubugeeei-prod/uf/integrations/github-actions@uf@0.0.0-alpha.10
+        with:
+          version: 0.0.0-alpha.10
+      - run: uf install --frozen-lockfile
+      - run: uf fmt --check
+      - run: uf check
+      - run: uf test
+```
+
+入力: `version` `cache` `setup-url` `repository` `verify-origin` `token`。出力: `version` `bin-dir` `cache-hit`。
+
+**Windows ランナーではスキップせず失敗します。** uf は macOS と Linux のバイナリしか公開しておらず、黙って何もしないマトリクスの脚は依然マトリクスを緑に報告します。それが Windows ジョブを 1 年間何も走らせずに通す失敗モードです。WSL2 で走らせてください。
+
+## GitLab CI
+
+```yaml
+include:
+  - remote: "https://raw.githubusercontent.com/ubugeeei-prod/uf/uf@0.0.0-alpha.10/integrations/gitlab/uf.gitlab-ci.yml"
+
+variables:
+  UF_VERSION: "0.0.0-alpha.10"
+
+check:
+  extends: .uf
+  script:
+    - uf install --frozen-lockfile
+    - uf check
+```
+
+テンプレートは `uf:check` `uf:fmt` `uf:test` `uf:build` も出荷するので、特別なことのないプロジェクトは script を書きません。
+
+GitLab 固有の 3 点。ツールチェーンは `$CI_PROJECT_DIR/.uf-toolchain` に入ります（GitLab のキャッシュはプロジェクトディレクトリ内のパスしか運ばないので、`$HOME` に入れると全パイプラインの全ジョブがリリースを再ダウンロードします）。デフォルトイメージは Alpine ではなく glibc（uf は `*-unknown-linux-gnu` バイナリを出荷し、glibc バイナリは musl で起動しません）。そして素の Debian ではなく `node:24-bookworm-slim`（`uf install` はプロジェクト自身のパッケージマネージャを運転し、`uf test` と `uf build` は JavaScript ホストで走ります）。
+
+## CircleCI
+
+```yaml
+version: 2.1
+orbs:
+  uf: uniflowed/uf@1
+
+workflows:
+  ci:
+    jobs:
+      - uf/run:
+          name: check
+          version: 0.0.0-alpha.10
+          command: uf check
+```
+
+`uf/install` はコマンド単体、`uf/run` は与えられたコマンドの前に `uf install --frozen-lockfile` を走らせます（`install-dependencies: false` で切れます）。
+
+## チェックの前にインストールする
+
+上の 3 ファイルはツールチェーンをインストールします。**ツールチェーンはプロジェクトではなく、それをインストールする行は省略可能ではありません。**
+
+```yaml
+- run: uf install --frozen-lockfile
+```
+
+省くと `uf test` と `uf build` は失敗し、それで構いません。走れないジョブはそう言います。**心配すべきは `uf check` で、失敗しないからです。通ります。**
+
+`uf check` は import をチェック対象のバッチ内のファイルか `node_modules` 下のパッケージに解決し、どちらでもない指定子は `any` として型付けします。依存が入っていないチェックアウトでは、すべての `import type { … } from "@uniflowed/react"` が `any` になり、それに対して書かれたすべての注釈は正しくも間違ってもなく、ジョブは誰も心配していなかった部分だけをチェックして緑になります。
+
+```
+$ uf check                       # node_modules なし
+✓ no problems
+
+  types checked  8
+  unchanged      8 of 8
+
+  › these imports are typed as any; uf resolved no module for them
+    - @uniflowed/config
+    - @uniflowed/react
+    - @uniflowed/router
+    - @uniflowed/test
+```
+
+誰も読まないフッター付きの緑のチェックは、GitHub アクションが Windows ランナーを拒否するのと同じ失敗です。
+
+`uf fmt --check` は同じものの静かな版です。Flow 半分は何も要りませんが、JSON / CSS / TypeScript は uf がリンクせず起動するフォーマッタに行き、それは `node_modules/.bin` で探されます。そこになければそれらのファイルは skipped と報告され、**意図的に終了コードに届きません。**
+
+`--frozen-lockfile` が素のインストールではなくパイプラインが欲しいものです。ロックファイルが固定するものを正確にインストールし、manifest がそこから動いていたら失敗します。差を解決して、レビュアーが承認していないものをテストする代わりに。
+
+## バージョンを固定する
+
+3 つとも `latest` にデフォルトし、3 つともそこに放置するなと言います。`latest` はプレリリースを含む最新（今のところ uf が公開したすべてのリリース）なので、変わっていないパイプラインの下で動きます。
+
+キャッシュが助けられない唯一の値でもあります。`latest` という語でキーされたキャッシュは、パイプラインが初めて走ったときに最新だったリリースで答え、新しいものが出た後も答え続けます。キャッシュなしより悪い。動いているように見えるから。だから 3 つとも version が `latest` のときキャッシュをスキップします。
+
+そして最初にパイプラインを噛む理由。`latest` は GitHub API に「どのリリースが最新か」を尋ねる唯一の値で、匿名の呼び出しは IP でレート制限されます。ホストランナーではフリート全体の他のジョブと共有する IP です。だから `latest` のパイプラインは、それとまったく関係ない理由で `no release found` で断続的に失敗します。GitHub アクションはワークフロー自身のトークンを通すので大丈夫ですが、**GitLab と CircleCI では固定してください。**
+
+キャッシュはキーの強さでも信用されません。各インテグレーションは復元したディレクトリから `uf --version` を走らせてから信用します。シンボリックリンクを失ったキャッシュは、何も走らせられるヒットだからです。
+
+## ジョブから結果を読む
+
+パイプラインが読むのは 2 つ。終了コードと、ステップが書いたもの。どちらもプログラムが読むためのものです。
+
+終了コードは 3 つ。`0`、コマンドが見つけた問題の `1`、コマンドをまったく走らせられなかった `2`。
+
+ターミナルは要りません。uf は stdout がターミナルでないときプログレスも色も描かず、`--json` はすべての人間向け描画を抑制し、引数なしの uf は人間向けのメニューを開く代わりにヘルプを印字して 2 で終了します。
+
+| コマンド | 機械可読な形 |
+| --- | --- |
+| `uf check` | `--json` |
+| `uf lint` | `--json` |
+| `uf test` | `--json`、`--reporter junit --reporter-outfile <file>` |
+| `uf inspect` `uf explain` `uf doc` | `--json` |
+| `uf install` | 終了コードと、書いたツリー |
+| `uf build` | 終了コードと、出力ディレクトリ下のビルドマニフェスト |
+| `uf fmt --check` | 終了コードと、stdout 上のファイル一覧 |
+
+`uf check --json` はこのページの主題を運ぶので、誰かが `uf install` を走らせたと信じる代わりに、それで失敗できます。
+
+```sh
+uf check --json > check.json
+jq -e '.typeCheck.untypedModules | length == 0' check.json ||
+  { echo "uf resolved no module for some imports; are dependencies installed?"; exit 1; }
+```
+
+`typeCheck.untypedModules` は uf が `any` で答えたすべての指定子です。**何も見つけなかったチェックと、何も見なかったチェックの差**です。
+
+## 何をキャッシュし、キーが何を言わなければならないか
+
+実行間で持ち越す価値のあるものは 2 つあり、別のキーに答えます。両方に 1 つのキーを使うのは、キャッシュが 1 つあるより悪い。
+
+| 何 | どこ | キーが含まなければならないもの |
+| --- | --- | --- |
+| ツールチェーン | `UF_INSTALL_ROOT` が置く場所 | uf のバージョンと**アーキテクチャ** |
+| 依存 | `node_modules`、またはマネージャのストア | ロックファイル |
+| uf 自身の答え | `.uf/cache` | uf のバージョン |
+
+**アーキテクチャが抜けやすい**もので、GitLab テンプレートからは最近まで抜けていました。uf はターゲットごとに 1 アーカイブを公開するので、amd64 と arm64 のランナーが混ざったフリートで共有されたキャッシュは、片方のバイナリをもう片方に復元してヒットと報告します。
+
+pnpm は 3 つとも例外です。`node_modules` がプロジェクト外のストアへのシンボリックリンクのツリーなので、リンクではなくストアをキャッシュしてください。
+
+## 実際に走っているもの
+
+3 つとも `install.sh` を取得して走らせます。`curl -fsSL https://setup.uniflowed.dev | sh` の裏にあるのと同じスクリプトを、環境変数で設定したものです。
+
+| 変数 | 何を決めるか |
+| --- | --- |
+| `UF_VERSION` | リリース、または `latest` |
+| `UF_INSTALL_ROOT` | `runtimes/uf@<version>` が展開される場所 |
+| `UF_BIN_DIR` | `uf` `ufr` `ufx` がリンクされる場所 |
+| `UF_REPO` | リリースをダウンロードする GitHub リポジトリ |
+| `UF_VERIFY_ORIGIN` | `auto` / `require` / `off` |
+| `UF_CHECKSUM_BASE` | `<version>/<asset>.sha256` を配信する第 2 のホスト |
+
+バージョンを解決し、`uf-<target>.tar.gz` をダウンロードし、横に公開された sha256 に対して検証し、**自分のディレクトリの外に着地するメンバーを持つアーカイブを拒否し**、展開して 3 つの名前をリンクします。インテグレーションが自分で tarball を取得せずインストーラを走らせるのは、3 つの再実装がチェックサムを忘れられる 3 か所になるからです。
+
+### アーカイブの出所を証明する
+
+上の sha256 は転送だけを証明します。チェックサムがアーカイブと同じホストにあるので、バイトが無傷で届いたことは言えても、誰が作ったかは言えません。それを言えるものが 2 つあり、**パイプラインはそれを求めるべき場所**です。ラップトップが普通持たないツールをインストールできるから。
+
+- **署名。** 各リリースは keyless Sigstore で署名され、インストーラは署名したアイデンティティ（リポジトリとその中のリリースワークフロー）に対してバンドルを検査します。PATH に `cosign` が要ります。
+- **第 2 の意見。** `UF_CHECKSUM_BASE` が、アーカイブを配信しないホスト上のチェックサムのミラーを指します。弱い（誰が作ったかではなく 2 人の運用者がバイトについて合意していることを証明する）が、攻撃者は 1 つではなく 2 つのホストを持つ必要があります。
+
+`verify-origin`（`UF_VERIFY_ORIGIN`）が、どちらも利用できないときに何が起きるかを決めます。デフォルトの `auto` は証拠があればそれを使い、チェックが失敗すれば拒否し、チェックするものがなければはっきりそう言います。`require` は「チェックするものがない」も拒否に変え、uf 自身のリリーススモークテストがそれで走ります。3 つのどれでもない値は、何もダウンロードする前にインストーラを止めます。**セキュリティスイッチのタイポが「オフにする」と読まれてはならない**から。
+
+## コミットの前にも
+
+パイプラインはチェックが走る 2 番目の場所で、1 番目はコミットです。`uf prepare` が pre-commit コマンドで、1 つのコマンドが git に組み込みます。
+
+```
+$ uf prepare --install-hooks
+✓ wrote .githooks/pre-commit
+✓ set core.hooksPath to .githooks
+› git runs `uf prepare` before each commit now; commit .githooks/pre-commit, so that every clone runs this once and gets the same hook
+```
+
+`.githooks/pre-commit` をコミットしてください。git は `core.hooksPath` を versioned でない `.git/config` に保つので、各クローンが一度 `uf prepare --install-hooks` を走らせます。**uf は誰かの代わりにそれをする postinstall スクリプトを走らせません。**
+
+実行はステージされたものをチェックします。半分ステージされたファイルはコミットされる通りにチェックされ、ステージされていない半分は後で戻されます。
+
+## ここにないもの
+
+Jenkins、Buildkite、Woodpecker、Drone のファイルはなく、uf をプリインストールした Docker イメージもありません。どれも同じ 5 行（install、PATH、cache、`uf install`、run）で、ここにはまだ書かれていないだけです。ファイルのないシステムのためにあるのは、同じルールのリストです。**バージョンを固定し、キャッシュキーにアーキテクチャを入れ、`node_modules` を読む何よりも前に `uf install` を走らせ、結果をログではなく `--json` から読む。**
+
+`uf fmt --check` に `--json` がないのが、パイプラインが散文として読まなければならないこのページで唯一のものです。誰も気づかなかったものではなく、誰かが残すと決めたものであり続けるように、`tools/ci/recipes-are-runnable.sh` に名指しされています。

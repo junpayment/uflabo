@@ -1,0 +1,115 @@
+---
+title: "Web ビルドをデプロイする"
+description: "ビルドがデプロイするもの。変わるのはリクエストに答えるマシンがすでに何を持っているか。このチェックアウト、JavaScript ランタイム、プラットフォームランタイム、静的ファイルホスト、あるいは 1 つの実行ファイルだけ。"
+section: "targets"
+order: 1
+source: "/guide/deploy"
+---
+
+import { Callout } from "../../_design/Callout.js";
+
+## 形を選ぶ
+
+すべての道は `uf build` から始まります。その後、ホストが誠実に動かせるいちばん小さいものを選びます。
+
+| ホストが持つもの | 使うもの | 運ぶもの |
+| --- | --- | --- |
+| このチェックアウト、依存、Vite | `uf preview` | なし。その場でビルドを確認 |
+| このチェックアウト、依存、JavaScript ランタイム | `uf start` | `dist/`、`.uf/build/server`、`node_modules` |
+| プラットフォームランタイム | `uf build --adapter TARGET` | `.uf/deploy/TARGET/` |
+| 静的ファイルホストだけ | `uf build --adapter static` | `.uf/deploy/static/` |
+| 実行できるファイル 1 つだけ | `uf build --compile` | `dist/NAME` |
+
+## 一度ビルドする
+
+`uf build` はブラウザアセット、プリレンダリング済みドキュメント、サーバーバンドルを書きます。
+
+```
+  output
+    web-deploy
+    |- .uf
+    |  `- build
+    |     `- meta
+    |        |- openapi.json
+    |        |- uf-build-manifest.json
+    |        |- uf-bundle-report.json
+    |        `- uf-rsc-manifest.json
+    |- dist
+    |  |- 404.html
+    |  `- index.html
+    `- router.js
+
++ build succeeded in 14.66s
+```
+
+`dist/` はブラウザが取得できるもの。`.uf/build/meta/` はあなたとツール用。サーバーバンドルは、リクエストがファイル以上を必要とするときに `uf preview` `uf start` サーバーアダプタ、コンパイル済みバイナリが走らせるものです。
+
+## 出す前に確認する
+
+```sh
+uf preview   # 本番ビルドの周りに Vite の preview サーバー。127.0.0.1:4173
+uf start     # プロセス内にバンドラなし、ビルド済み出力の上の uf 自身のサーバー。127.0.0.1:3000
+```
+
+どちらも同じ 1,643 バイトの HTML ドキュメントで `/` に答えました（公式の検証プロジェクト）。それが約束です。**アセット、次にルートハンドラ、次に描画。どの玄関を使っても。**
+
+## ホスト向けにパッケージする
+
+`uf build --adapter TARGET` はチェックアウトを離れられるディレクトリを書きます。サーバーターゲットは同じ `@uniflowed/server/fetch` ハンドラを共有し、ターゲット固有のファイルはホスト側の半分だけです。
+
+| ターゲット | コマンド | 出力と起動 |
+| --- | --- | --- |
+| Node | `uf build --adapter node` | `.uf/deploy/node`、`node server.js` |
+| Bun | `uf build --adapter bun` | 検証時は拒否: `bun: 1.3.13 is older than 1.3.14` |
+| Deno | `uf build --adapter deno` | `.uf/deploy/deno`、`deno run --allow-net --allow-read --allow-env server.js` |
+| Container | `uf build --adapter container` | `.uf/deploy/container`、`docker build … && docker run -p 3000:3000 …` |
+| Edge | `uf build --adapter edge` | `.uf/deploy/edge`、`npx wrangler deploy`（Cloudflare Workers） |
+| Serverless | `uf build --adapter serverless` | `.uf/deploy/serverless`、`zip -r ../function.zip .`（AWS Lambda） |
+| Static | `uf build --adapter static` | `.uf/deploy/static`、内容を静的ホストにアップロード |
+
+<Callout kind="warn" title="証明されていないこと">
+成功したアダプタコマンドはディレクトリを作りました。**Cloudflare、AWS、コンテナレジストリ、Deno ホスト、Bun ホストにデプロイはしていません。** どのサーバーアダプタの出力も、uf 自身のパイプラインで実プラットフォーム上で証明されておらず、#956 がその証拠が属する場所です。
+</Callout>
+
+## static はファイルだけ
+
+静的ホストはルートハンドラ、ミドルウェア、呼べるサーバーアクション、`app.router` のリダイレクト・リライト・ヘッダ、`generateStaticParams` のないパラメータ付きルートを動かせません。`uf build --adapter static` は、アプリの一部だけに答えるディレクトリを書く代わりに、それらを拒否します。
+
+```
+error: this project cannot be served by a static host, so `uf build --adapter static` would have written a directory that answers most of it and silently dropped the rest
+  /api/health (app/api/health/$route.js) — a route handler answers a request, and a static host has only files
+  Serve it with `uf build --adapter node`, `--adapter container`, `--adapter edge` or `--adapter serverless` — the application is the same file in all four — or remove what needs a server and build again.
+```
+
+修正はフラグではなくデプロイの選択です。サーバー専用の機能を取り除くか、動的ルートに `generateStaticParams` で全パスを与えるか、サーバーターゲットを選ぶか。
+
+## 1 ファイルにコンパイルする
+
+`uf build --compile` はランタイムとアセットを運ぶ 1 つの実行ファイルを書きます。
+
+```
+  standalone
+    binary           dist/web-deploy
+    runtime          bun 1.3.13
+    bytes            66.80 MB
+    embedded assets  14
+    embedded bytes   1.76 MB
+```
+
+そのファイルは単独でコピーできます。ビルドには bun が必要で、実行には何も要りません。トレードは明白で、ランタイムとアセットは中に固定されるので、どちらを変えるにもビルドし直しです。コンパイル済みバイナリはルートキャッシュを持たないことにも注意（[キャッシュ](/app/caching)）。
+
+```sh
+$ scp dist/docs server:/srv/docs && ssh server /srv/docs --port 8080
+uf: 67 embedded files
+uf: listening on http://127.0.0.1:8080
+```
+
+## 起動時の環境
+
+ソケットを選ぶ値（`HOST`、`PORT`、そのコマンドライン上書き）は、`uf start`、node/bun/deno/container アダプタのサーバー、コンパイル済みバイナリが起動するときに読まれます。`process.env` で読むサーバー専用の値も、それを読むコードがサーバーで走る限り起動時の値です。
+
+ブラウザに出荷される値は違います。クライアントバンドルの一部で、リビルドが要ります。[環境](/toolchain/environments) がより長い契約です。
+
+## 確立されていること
+
+`uf preview`、`uf start`、サーバーアダプタのディレクトリ、`--compile` は同じリクエストハンドラを使います。static アダプタは生成ファイルだけをデプロイします。確立されていないのは、サーバーアダプタの実デプロイの成功です。それが起きたら、プラットフォーム、生成ディレクトリ、ランタイムの版を #956 の横に書き留めることになっています。

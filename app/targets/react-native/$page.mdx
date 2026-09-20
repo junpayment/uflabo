@@ -1,0 +1,223 @@
+---
+title: "React Native ターゲット"
+description: "React Native は uf の「ターゲット」であり、Web アプリを横向きにするフラグではない。共有部分は Flow ツールチェーンとファイルシステムルートテーブル。ネイティブ部分は Metro バンドル、プラットフォーム別ルートファイル、ナビゲータ契約、DOM を装わないテストクエリ。"
+section: "targets"
+order: 2
+source: "/guide/react-native"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+## 現在地
+
+正直な状態です。
+
+| 部品 | 状態 | 何があるか |
+| --- | --- | --- |
+| パッケージのファサード | 実装済み | `@uniflowed/react-native` がアプリの本物の `react-native` peer を再 export |
+| ルートターゲット | 実装済み | `uf build --target native` / `ios` / `android` がネイティブルートファイルを選ぶ |
+| Metro 設定 | 実装済み | `withUniflowedMetro` が Expo と React Native のデフォルト Metro 設定と合成される |
+| dev ループ | プロジェクト自身の CLI 経由で実装済み | `uf dev --target native` が `expo start` / `react-native start` を走らせる |
+| ネイティブルートテーブル | 実装済み | `router.ios.js` `router.android.js` `router.native.js` を uf dev / build が書く |
+| ネイティブルーター | 契約として実装済み | `@uniflowed/router/native` が uf ルートをナビゲータイベントか screen 呼び出しに解決 |
+| テストクエリ | ツリーとレンダラー JSON に対して実装済み | `@uniflowed/react-native-testing` |
+| **ネイティブホストレンダラー** | **未実装** | `render()` は JSON テストアダプタで、React Native のホスト設定でもレイアウトエンジンでもアプリシェルでもない |
+| アプリランタイム、ネイティブビルド、更新 | 設計上 Expo のもの | Expo Go / development build、SDK のネイティブモジュール、prebuild、EAS Build / Update |
+
+重要な区別は**契約とランタイム**の間です。uf はすでに、どのルートファイルがネイティブバンドルに属するか、Metro が何を解決する必要があるか、どのルートがどのナビゲータイベントになるか、ネイティブレンダラーが生んだツリーをどう問い合わせるかを言え、デバイス用にプロジェクト自身の dev サーバーを起動します。**ネイティブアプリのランタイムは出荷しません。**
+
+## 使える範囲
+
+今日、ネイティブターゲットは「Flow・ルート・Metro・テストを揃えるのに uf が必要な Expo / React Native CLI アプリの中」で使います。**アプリを作り、ビルドし、提出するものとしては使わない。** それは Expo の仕事で、2 つは合成されます。
+
+## ターゲットを設定する
+
+<Figure title="uf.config.js">
+
+```js
+// @flow
+import { defineConfig } from "@uniflowed/config";
+
+export default defineConfig({
+  app: {
+    framework: "react-native",
+    targets: ["react-native"],
+  },
+});
+```
+
+</Figure>
+
+```sh
+uf build --target native
+uf build --target ios
+uf build --target android
+```
+
+`--compile` と組み合わせた `--target` は別の意味（バイナリのプラットフォーム triple）で、ビルドコマンドは混同されたときにどちらを頼んだか言います。
+
+## ルートファイル
+
+ネイティブルートは Web ルートと同じルートディレクトリ、同じセグメント文法を使います。変わるのはスキャナが選ぶ予約ファイルのバリアントです。
+
+```
+app/
+  $layout.js
+  $page.web.js
+  $page.native.js
+  settings/
+    $page.native.js
+    $page.ios.js
+    $page.android.js
+```
+
+| ビルドターゲット | ファイルの優先順 |
+| --- | --- |
+| web | `$page.web.js` → `$page.js` |
+| native | `$page.native.js` → `$page.js` |
+| ios | `$page.ios.js` → `$page.native.js` → `$page.js` |
+| android | `$page.android.js` → `$page.native.js` → `$page.js` |
+
+レイアウト、ルートハンドラ、ローディング境界、テンプレート、not-found、error 境界も同じサフィックスルールに従います。ネイティブビルドは「ディレクトリに Web ページしかなかったから」黙って Web ページを使いません。
+
+<Figure title="app/settings/$page.native.js">
+
+```js
+// @flow
+import { Pressable, Text, View } from "@uniflowed/react-native";
+
+export component Page() {
+  return (
+    <View>
+      <Text>Settings</Text>
+      <Pressable accessibilityRole="button"><Text>Save</Text></Pressable>
+    </View>
+  );
+}
+```
+
+</Figure>
+
+## Metro
+
+Metro は依然バンドル、dev サーバー、Fast Refresh を所有します。uf が足すのは、Flow・React Compiler・StyleX ポリシーをプロジェクトがすでに持っていたトランスフォーマーの**前**に走らせる Babel トランスフォーマーと、それを配線するヘルパーです。
+
+<Figure title="metro.config.js">
+
+```js
+const { getDefaultConfig } = require("expo/metro-config");
+const { withUniflowedMetro } = require("@uniflowed/react-native/metro");
+
+module.exports = withUniflowedMetro(getDefaultConfig(__dirname));
+```
+
+</Figure>
+
+どちらのファイルも CommonJS で、ヘルパーもそうです。Metro は素の Node で設定を評価するので、これが Flow でない唯一の `@uniflowed/*` モジュールです。
+
+uf が所有するモジュールのチェーン:
+
+```
+Flow lowering -> React Compiler -> StyleX CSS refusal -> the project's transformer
+```
+
+StyleX のエントリは意図的な拒否です。ネイティブ Metro バンドルには CSS を付ける場所がまだないので、スタイルシートを落として何にも解決しないクラス名を出荷する代わりに raise します。ソースマップはまだ合成されず、Flow モジュール内のスタックフレームは uf の出力を指します（#988）。
+
+## デバイスで開発する
+
+```sh
+uf dev --target native
+```
+
+```
+uf dev · my-app
+
+  engine     metro, run by expo start (expo 57.0.22)
+  target     native
+  mode       development
+  transform  uf transform, then node_modules/expo/node_modules/@expo/metro-config/build/babel-transformer.js
+  metro      metro.config.js
+  device     exp://192.168.1.20:8081
+
+› Expo Go, or a development build, on the same network opens this; Expo prints its QR code below
+```
+
+その後のターミナルは Expo のものです。`--` の後はサーバーにそのまま渡ります（`uf dev --target native -- --tunnel`）。`--host` は拒否されます。各サーバーが bind の綴りを持つからです。
+
+## ネイティブナビゲーション
+
+ブラウザルーターは URL バーと History API を所有し、ネイティブアプリはナビゲータを所有します。`@uniflowed/router/native` は共有部分を小さく保ちます。
+
+```js
+import { createNativeScreenManifest, createNativeScreenRouter, nativeScreenName } from "@uniflowed/router/native";
+
+export function nativeRouter(routeTable: RouteTable) {
+  const manifest = createNativeScreenManifest(routeTable, {
+    name(route) {
+      return route.path === "/users/:id" ? "UserProfile" : nativeScreenName(route.path);
+    },
+  });
+  return createNativeScreenRouter(routeTable, manifest.screens, {
+    push(screen, state) { navigation.push(screen, { ...state.params, href: state.href, search: state.search }); },
+    replace(screen, state) { navigation.replace(screen, { ...state.params }); },
+    prefetch(screen, state) { warmScreen(screen, state.params); },
+  });
+}
+```
+
+Web エントリは `virtual:uf/routes`（Vite 内にしか存在しないモジュール）からテーブルを受け取りますが、Metro に仮想モジュールはないので、uf は各プラットフォームのテーブルを `router.js` の横に書きます。`./router` を import すれば Metro のプラットフォーム解決がファイルを選びます。
+
+ナビゲータに届く前に拒否される 4 つ: 外部 URL（`Linking` の仕事）、相対パス（解決する現在のドキュメント URL がない）、`#bio` のようなアンカー（ネイティブ画面にアンカーはない）、ネイティブルートテーブルにページモジュールがないパス。
+
+## テスト
+
+`@uniflowed/react-native-testing` はすでに存在するツリーを問い合わせられます。
+
+```js
+// @flow
+import { createNativeScreen } from "@uniflowed/react-native-testing";
+import { expect, it } from "@uniflowed/test";
+
+it("finds the native button by accessible name", () => {
+  const screen = createNativeScreen({
+    type: "Pressable",
+    props: { accessibilityLabel: "Save changes", accessibilityState: { disabled: true } },
+    children: [{ type: "Text", props: {}, children: ["Save"] }],
+  });
+  expect(screen.getByRole("button", { name: "Save changes", disabled: true }).type).toBe("Pressable");
+});
+```
+
+省略可能な `react-test-renderer` peer（React 19.3 系）を入れれば `render()` が JSON ツリーにマウントし、同じクエリ + `rerender` / `unmount` / `toJSON` を返します。**それでも JSON テストアダプタです。** 本物のネイティブランタイムが必要なテストは、理由つきでスキップすべきです。
+
+```js
+it.skipBecause(
+  "renders the settings screen on the native host",
+  "uf can query React Test Renderer JSON, but this suite needs a native host config.",
+);
+```
+
+## ネイティブコードの lint
+
+`uf lint` は `react-native/platform-split` を含みます。実行時分岐よりプラットフォームファイルを好む警告です。`.ios.js` / `.android.js` の組は、モジュール本体に隠れた `if` より強い言明です。バンドル、ルートマニフェスト、Metro、リンタのすべてが、あなたのコードを実行せずにそれを見られるから。
+
+## Expo と比べて
+
+Expo は完全なアプリケーションプラットフォームで、uf は第 2 のそれになろうとしていません。**Expo にすでに答えがある場所では、uf は置き換えるのではなく Expo を走らせます。**
+
+`create-expo-app` が作ったアプリで両方を使うには:
+
+1. `@uniflowed/react-native` を依存に足し、`app: { framework: "react-native", targets: ["react-native"] }` の `uf.config.js` を書く
+2. `metro.config.js` を `withUniflowedMetro(getDefaultConfig(__dirname))` で合成する
+3. 画面とコンポーネントを Flow で書き、`uf dev --target native` を走らせ、Expo の QR コードをスキャンする
+4. ネイティブモジュールは `npx expo install` で、ビルドと更新は EAS で続ける
+
+## まだ欠けているもの
+
+- ナビゲータとしてのルート。React Navigation のスタックやタブにするものはまだない（#991）
+- 回避策なしの Expo プロジェクト。EAS Build や Xcode がバンドルする場所には uf のインストールが必要（#992）
+- ネイティブホストレンダラー（#989）
+- トランスフォーマー越しのソースマップ（#988）
+- ネイティブの StyleX（#984）、Web とネイティブで 1 ルートファイル（#985）、Metro 経由のネイティブビルド（#983）、ネイティブからのサーバーアクション（#982）、ネイティブアセットと依存互換性（#987）
+
+#501 がこのターゲット全体を追跡しています。

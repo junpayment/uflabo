@@ -1,0 +1,190 @@
+---
+title: "タスク（uf run / ufx）"
+description: "uf install は scripts のある package.json を拒否するので、uf プロジェクトの自動化は uf.config.js に tasks として住む。uf run は 1 つと、それが依存するすべてを、依存順に、複数同時に、宣言した入力が変わっていなければキャッシュから走らせる。"
+section: "toolchain"
+order: 7
+source: "/guide/tasks"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+## 宣言する
+
+タスクは `tasks` の下のコマンドで、文字列かオブジェクトです。
+
+<Figure title="uf.config.js">
+
+```js
+// @flow
+import { defineConfig } from "@uniflowed/config";
+
+export default defineConfig({
+  tasks: {
+    tokens: {
+      command: "node scripts/tokens.js",
+      inputs: ["tokens/**", "scripts/tokens.js"],
+      outputs: ["generated/tokens.css"],
+    },
+    icons: {
+      command: "node scripts/icons.js",
+      inputs: ["icons/**", "scripts/icons.js"],
+      outputs: ["generated/icons.txt"],
+    },
+    assets: { command: "node scripts/done.js", dependsOn: ["tokens", "icons"] },
+    greet: "node scripts/greet.js",
+  },
+});
+```
+
+</Figure>
+
+| フィールド | 何をするか |
+| --- | --- |
+| `command` | 走るもの |
+| `dependsOn` | 先に成功していなければならないタスク。`member#task` で別ワークスペースメンバーのもの |
+| `inputs` | タスクが読むファイルの glob。**ないタスクは決してキャッシュされない** |
+| `outputs` | 書くものの glob。キャッシュ結果の再生前に検査される |
+| `env` | uf がタスクに設定する変数 |
+| `cwd` | 走る場所（プロジェクトルートからの相対） |
+| `cache` | `false` で、inputs を宣言したタスクのキャッシュを切る |
+
+タスクなしの `uf run` はプロジェクトが定義するものを列挙します。`ufr` は同じコマンドの短い名前です。
+
+## 1 つと、それが依存するものを走らせる
+
+```
+$ uf run assets
+icons  | indexed 2 icons
+tokens | wrote 2 tokens to generated/tokens.css
+✓ tokens  ran       0.02s
+✓ icons   ran       0.02s
+done
+✓ assets  ran       0.02s
+  3 tasks, 0 replayed, 3 run, in 0.05s
+```
+
+2 つの依存は同時に走りました。互いに依存しないからです。`uf run` は一度に最大 4 タスク（コアがそれより少なければコア数）を起動し、`-j N` で変えます（コア数は超えない）。2 経路から到達される依存は 1 度走ります。
+
+依存が印字したものは名前の後ろに書かれ、あなたが求めたタスクが印字したものは素で書かれるので、求めた出力は単独で走らせたときのように読めます。
+
+## コマンドがどう走るか
+
+プログラムと引数であるコマンドは uf 自身がシェルなしで起動するので、シェルのないマシンでも同じに走ります。シェル構文を使うコマンド（パイプ、`&&`、リダイレクト、`$VARIABLE`、glob、`cd` のような組み込み）は、書かれたまま `sh -c` に渡されます。
+
+タスクの環境はモードの `.env` カスケード、次にタスクの `env`、次にコマンド内の `NAME=value` です。すでにプロセス環境にある変数がすべてのファイルに勝ちます。
+
+タスク名の後の引数はコマンドに追加され、**再度読まれます**。プログラムに 1 引数 1 つずつ届くわけではありません。
+
+```
+$ uf run greet -- --loud "two words"
+arguments: ["--loud","two","words"]
+```
+
+`two words` は 2 引数として届き、引数内の `;` や `$` は行全体を `sh` に渡します。
+
+## キャッシュ
+
+タスクは、空でない `inputs` を持つオブジェクトとして書かれ `cache` が `false` でないときキャッシュされます。キーは次のハッシュです。
+
+- タスクの名前とコマンド、与えられた引数
+- モード、タスクが与えられた `.env` の値、その `env` と `cwd`
+- 書かれた通りの `inputs` パターンと、それがマッチするすべてのファイルの内容
+- 書かれた通りの `outputs` パターン
+
+同じキーの 2 回目は、1 回目が印字したものを再生し、コマンドを走らせません。`--why` が各タスクについて走った理由・再生された理由を言います。
+
+```
+$ uf run assets --why
+✓ icons   replayed  saved 0.02s  — every declared input is unchanged
+✓ tokens  replayed  saved 0.02s  — every declared input is unchanged
+✓ assets  ran       0.02s  — declares no inputs, so it always runs
+  3 tasks, 2 replayed, 1 run, in 0.02s
+```
+
+```
+✓ tokens  ran       0.02s  — tokens/colors.json changed
+✓ icons   ran       0.02s  — generated/icons.txt is missing
+```
+
+**`outputs` は検査され、復元されません。** 記録したすべてのファイルがディスク上に当時の内容で残っている間だけ結果が再生されるので、ビルドディレクトリを消せば再ビルドされます。失敗した実行は決して記録されません。
+
+`--why` が比較するノートは、タスクが与えられた各変数の**名前と値のダイジェスト**を保ち、値そのものは保ちません。だから `--why` は「`API_TOKEN` が変わった」と何に変わったかを言わずに言えます。
+
+キーが知らない 4 つ、それぞれのコスト:
+
+- **プロセス環境。** シェルで export してタスクが読む変数はキーになく、変えても古い答えが再生されます。タスクが依存する値は uf が設定する `env` に置いてください。
+- **マシン。** uf 自身のバージョン、PATH の Node、プラットフォーム、シェルは入っていません。それらに答えが依存するタスクは `inputs` を宣言すべきではありません。
+- **同一プロジェクト内の依存の結果。** タスクは自分のキーで再生されます。同じプロジェクトの依存が再実行されても、その依存者は再実行されません。その依存が書くファイルを `inputs` に名指してください。別メンバーのタスクは例外です。
+- **すべてのディレクトリ。** `**` はパターンがそのディレクトリをリテラルに名指さない限り `.git` `.uf` `dist` `node_modules` `target` に降りず、シンボリックリンクも辿りません。
+
+## 失敗したとき
+
+```
+$ uf run release
+✓ tokens   replayed  saved 0.02s
+schema  | schema: the field `id` is declared twice
+✗ schema   ran       0.02s
+  3 tasks, 1 replayed, 1 run, 1 not reached, in 0.02s
+error: task "schema" exited with exit status: 3
+```
+
+最初の失敗の後、新しいタスクは始まりません。すでに走っているものは終わります。`uf run` は失敗したタスクが何で終了しても 1 で終了します。子のステータスを渡すのは `uf exec` です。
+
+## 始まる前に拒否されるもの
+
+`dependsOn` のループ、タスクでない名前、キーにするものを何も名指さないタスクのキャッシュ要求は、何かが走る前に拒否されます。
+
+```
+error: `dependsOn` in uf.config.js closes a loop: loop-a → loop-b → loop-a
+
+error: task "asets" is not defined in uf.config.js
+  did you mean: assets
+```
+
+## ワークスペース
+
+ワークスペースメンバーは自分の `uf.config.js` を持つディレクトリか、ルートの `package.json#workspaces` が列挙するパッケージで、自分のタスクを自分の `uf.config.js` に宣言します。`uf run#site build` は `site` という名のメンバーの `build` を、`site` の中で `uf run build` を走らせるのと同じに走らせます。
+
+```
+$ uf run build -r
+✓ utils#build  ran       0.02s
+✓ ui#build     ran       0.02s
+✓ app#build    ran       0.02s
+```
+
+`-r` は `build` を定義するすべてのメンバーで走らせます。各メンバーは `package.json` が依存するメンバーの後に走るので、ワークスペースは必要な順にビルドされ、間に何もないメンバーは同じ `-j` 上限の下で同時に走ります。
+
+`--filter` は全部ではなく一部のメンバーで走らせ、`-r` を含意します。
+
+| `--filter` | 選ぶもの |
+| --- | --- |
+| `ui` | `ui` という名前、またはパス `ui` のメンバー |
+| `@acme/*`, `packages/*` | 名前かパスが glob にマッチするメンバー |
+| `./packages/ui` | そのパスのメンバー（`./` の後の glob はパスだけにマッチ） |
+| `app...` | `app` とそれが依存するすべて |
+| `app^...` | `app` が依存するものだけ |
+| `...ui` | `ui` とそれに依存するすべて |
+| `...^ui` | `ui` に依存するものだけ |
+
+何も選ばないセレクタは、何も走らせず 0 で終了する代わりに拒否されます。
+
+各メンバーは自分の `.uf/cache/task` に自分の `inputs` でキーしたキャッシュを持ちます。**別メンバーのタスクに依存するタスクは、そのタスクの結果でもキーされます。** `ui` が読むファイルを変えると `ui#build` と `app#build` が再実行され、`utils#build` は再生されます。キャッシュされていない別メンバーのタスクに依存するタスクは常に走ります。依存先が変わったかを言えるものが何もないから。
+
+## command のないタスク
+
+`command` のないオブジェクトとして書かれたタスクは Vite Task に渡されます。uf は `vp run <name>`（または `UF_VITE_TASK_BIN` が名指すもの）をプロジェクトルートで起動します。uf 自身のスケジューリングとキャッシュは適用されません。
+
+## ufx: パッケージのバイナリ
+
+`uf exec`（`ufx`）はプロジェクトの `.env` の値でプロジェクトルートからパッケージのバイナリを走らせ、そのバイナリ自身のステータスで終了します。探す順は、uf 自身の `@uniflowed/create` / `@uniflowed/test` / `@uniflowed/pm`（uf 内で実行）、プロジェクトルートの `node_modules/.bin`（親のものでも PATH でもない）、ファイルへのパス。それ以外は取得せず拒否されます。
+
+```
+$ ufx left-pad
+error: left-pad is not installed in this project, and fetching it would run code uf.lock does not pin.
+Declare it in package.json and run `uf install`, or say so explicitly:
+`uf exec --yes left-pad`, which runs `npx --yes left-pad`.
+```
+
+## ここにないもの
+
+`uf run` の `--json`、dry run、走らせずに計画を印字する方法、タスクの時間制限、リモートキャッシュ、キャッシュからの outputs の復元（ファイルを失ったキャッシュ結果は再生ではなく再実行）。

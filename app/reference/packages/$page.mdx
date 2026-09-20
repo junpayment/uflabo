@@ -1,0 +1,117 @@
+---
+title: "パッケージ一覧"
+description: "すべての @uniflowed/* パッケージ、何のためか、そして本当に存在するか。素の Flow で、ネイティブバインディングはない。"
+section: "reference"
+order: 3
+source: "/reference/packages"
+---
+
+3 つのルールがすべてに成り立ち、`uf_lib` がそれぞれを強制するテストを持ちます。React / Relay / React Native の peer ファサードでない限り `export *` を使わない。import 時に副作用を持たない（バンドラが使わないものを落とせる）。すべてのファイルに `// @flow` プラグマ。
+
+## コア
+
+| パッケージ | 何か |
+| --- | --- |
+| `@uniflowed/core` | 他のすべてが上に組まれる部品 |
+| `@uniflowed/react` | React を名前で再 export、Flow 自身の型付きで |
+| `@uniflowed/jsx-runtime` | uf がコンパイル先にする JSX ランタイム |
+| `@uniflowed/react-compiler` | 公式 React Compiler、uf 向けに配線 |
+| `@uniflowed/runtime` | 実行時に解決されるホスト能力 |
+| `@uniflowed/std` | 標準ライブラリ。Go のもののうち JavaScript にない部分 |
+
+## アプリケーション
+
+| パッケージ | 何か |
+| --- | --- |
+| `@uniflowed/router` | ファイルシステムルーター: マッチ、レイアウト、loader、`Link` |
+| `@uniflowed/server` | サーバーアダプタ |
+| `@uniflowed/config` | `defineConfig` と設定の Flow 型 |
+| `@uniflowed/vite` | Vite プラグイン、ドライバ、ホストの Flow ローダー |
+| `@uniflowed/loader` | 各ホストでのモジュール読み込み |
+| `@uniflowed/markdown` | Markdown と MDX |
+| `@uniflowed/web` | Web プラットフォームのバインディングと Web Vitals |
+
+自前の Vite 設定を保ち uf の Flow 変換だけ借りる React アプリは、`@uniflowed/host/transform` から `uniflowedPackages` を import して `optimizeDeps.exclude` に渡してください。`@uniflowed/*` は Flow ソースを出荷するので、Vite の optimizer はアプリのファイルを扱うのと同じ変換フックに任せなければなりません。
+
+## データ
+
+| パッケージ | 何か |
+| --- | --- |
+| `@uniflowed/fetch` | 型付き HTTP |
+| `@uniflowed/query` | キャッシュ、再検証、リクエストの重複排除 |
+| `@uniflowed/effect` | 型付き effect: 失敗を catch ではなく型に（[解説](/app/effects)） |
+| `@uniflowed/state` | アトミックな状態（[解説](/app/state)） |
+| `@uniflowed/cell` | 細粒度リアクティビティ: `state` と `derived`。下の層 |
+| `@uniflowed/validator` | assert ではなく parse するスキーマ |
+| `@uniflowed/i18n` | MessageFormat 2、メッセージの引数を型に |
+| `@uniflowed/orm` | データベースアクセス |
+| `@uniflowed/graphql`, `@uniflowed/relay` | GraphQL |
+| `@uniflowed/temporal` | すべてのホストでの Temporal |
+
+## インターフェース
+
+| パッケージ | 何か |
+| --- | --- |
+| `@uniflowed/ui` | render 型の上に組まれた、あなたが所有するコンポーネント（[解説](/app/ui)） |
+| `@uniflowed/hooks` | hook ライブラリ。ブラウザ側の半分はすべてサーバーの答えを持つ |
+| `@uniflowed/motion` | アニメーション |
+| `@uniflowed/stylex` | 静的スタイル（[解説](/app/styling)） |
+| `@uniflowed/react-native` | React Native をアプリの peer ランタイムとして再 export、+ Metro 設定 |
+| `@uniflowed/tui` | ターミナルインターフェース（[解説](/targets/tui)） |
+
+## テスト
+
+| パッケージ | 何か |
+| --- | --- |
+| `@uniflowed/test` | `describe` `it` `expect`、hook、`uf test` が起動するワーカー |
+| `@uniflowed/testing` | 同じ API の別名 |
+| `@uniflowed/react-testing` | React Testing Library の面。最初の render で happy-dom を入れる |
+| `@uniflowed/react-native-testing` | React Native のテストツリークエリ |
+| `@uniflowed/mock` | モック |
+| `@uniflowed/browser` | ブラウザ自動化 |
+| `@uniflowed/story`, `@uniflowed/vrt` | ストーリーとビジュアル回帰 |
+
+## ツーリング
+
+| パッケージ | 何か |
+| --- | --- |
+| `@uniflowed/cli` | CLI の JavaScript 側 |
+| `@uniflowed/lint` | lint ルールの型 |
+| `@uniflowed/lib` | すべてのパッケージが宣言されるレジストリ |
+| `@uniflowed/pm`, `@uniflowed/rm` | パッケージとランタイムの管理 |
+| `@uniflowed/prepare`, `@uniflowed/pwa` | ビルド準備、PWA |
+| `@uniflowed/brand` | 公式サイトが組まれているデザイントークン |
+
+## @uniflowed/ui が今日出荷しているもの
+
+`crates/uf_lib/src/ui.rs` のレジストリは、パッケージがいずれ持つすべてのコンポーネントを名指しています。**これらが存在するもの**です。それぞれ名前の通りの WAI-ARIA オーサリングプラクティスのパターンを実装し（ロール、`aria-*` 配線、フォーカス管理、キーボードマップ全体）、スタイルは一切出荷しません。
+
+| コンポーネント | パターン | 抜けやすい部分 |
+| --- | --- | --- |
+| Field | — | label / description / error / `aria-invalid` の配線と、存在しない要素を指す `aria-describedby` を決して作らないこと |
+| Switch, Checkbox, Toggle | Switch, Checkbox, Button | 3 コンポーネント。読者は「on」「checked」「pressed」を聞き分け、第 3 の状態と Enter キーが違う |
+| RadioGroup | Radio Group | 動きながらチェックする矢印と、何も選ばれていない間の最初の項目のタブストップ |
+| ToggleGroup | Button, Radio Group | トグルボタンの行に 1 つのタブストップ。`type="single"` はセグメントとして描かれたラジオグループ |
+| Tabs | Tabs | リスト全体に 1 タブストップ、automatic と manual の活性化の選択 |
+| Collapsible | Disclosure | `aria-expanded` と、内容がある間だけ名指す `aria-controls` |
+| Accordion | Accordion | 見出しレベルは呼び出し側のもの、閉じたパネルもブラウザのページ内検索で見つかる |
+| NavigationMenu | Disclosure Navigation Menu | `aria-expanded` ボタンの後ろのリンクの `<nav>`。`role="menu"` ではない |
+| Dialog | Dialog (Modal) | 逃れられないフォーカストラップ、フォーカスの返却、ページを止めて inert に |
+| Menu | Menu | 矢印、Home/End、タイプアヘッド、サブメニュー、1 レベルを閉じる 1 つの Escape |
+| Combobox | Combobox | 呼び出し側がフィルタするリスト上の `aria-activedescendant` と、読者に伝える件数 |
+
+**矢印キーは方位ではなく読者に従います。** 右から左に読むページでは行の最初の項目がいちばん右なので、ArrowLeft が次のタブに移り、サブメニューは左に開きます。`dir="rtl"` を置くだけが設定のすべてです。Home と End はミラーされません。読み順の最初と最後を名指すからです。
+
+**閉じたセクションは削除ではなく隠されます。** Collapsible と Accordion はパネルをドキュメントに残し `hidden="until-found"` を付けるので、ブラウザのページ内検索が中のテキストに届き、開いてスクロールできます。閉じたタブパネルと閉じたナビゲーショングループは代わりに削除され、両方のモジュールが理由を書いています。
+
+## 公開状況
+
+**一部は npm にあり、ほとんどはありません。** 公開済み集合（リポジトリの `tools/release/published-packages.txt`）は「本物の uf プロジェクトが必要とするクロージャ + テストランナー」で、その中のすべての名前が各 `uf@*` タグで一緒に出るので、常に 1 つのバージョンです。残りはリポジトリの npm ワークスペース経由でだけ解決します。公式ドキュメントサイト（`docs/` にある本物の uf プロジェクト）がそうやって import しています。
+
+これまでのすべてのリリースがプレリリースなので、手でインストールするときはプレリリースタグを名指してください。
+
+```sh
+npm install @uniflowed/ui@alpha
+```
+
+`uf new` にはタグは要りません。書く manifest が、書いた uf の正確なバージョンを固定するので、新しいプロジェクトのパッケージとスキャフォールドしたバイナリは 1 つのリリースです。

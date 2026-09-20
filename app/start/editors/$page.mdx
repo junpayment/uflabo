@@ -1,0 +1,102 @@
+---
+title: "エディタ設定"
+description: "uf lsp は uf の言語サーバー。エディタが見せる lint と整形は、ターミナルの uf lint / uf fmt と同じクレートから来る。"
+section: "start"
+order: 3
+source: "/guide/editors"
+---
+
+import { Callout } from "../../_design/Callout.js";
+
+## サーバーが答えるもの
+
+`export type Flag = bool;` を宣言する 1 ファイルとのセッション例:
+
+```
+initialize
+{"serverInfo":{"name":"uf-lsp"},"capabilities":{"textDocumentSync":1,"documentFormattingProvider":true,"hoverProvider":true,"codeActionProvider":{"codeActionKinds":["quickfix","source.fixAll.uf"]},"completionProvider":{"triggerCharacters":["\"","@"]}}}
+
+textDocument/publishDiagnostics
+flow/deprecated-type  severity 1  4:20  the `bool` type alias is deprecated; write `boolean`
+
+textDocument/codeAction
+quickfix          Replace `bool` with `boolean`  (preferred)
+source.fixAll.uf  Fix all uf lint problems in this file
+```
+
+| | 何か | 出どころ |
+| --- | --- | --- |
+| 診断 | ドキュメントを開いたとき・変更のたびに push。**型エラーではなく lint** | `uf lint` が走らせるルール、あなたの `uf.config.js` のレベルで |
+| フォーマット | ドキュメント全体への 1 編集 | `uf fmt` のプリンタ、あなたの `fmt` オプションで（エディタのタブ設定ではない） |
+| クイックフィックス | 機械的な答えのある診断への `quickfix` | `uf lint --fix` のカタログ |
+| Fix all | `source.fixAll.uf`: ファイル内の安全な修正を一度に | 同じカタログ。unsafe 層は選んで適用するクイックフィックスで、fix-all には含まれない |
+| ホバー | 診断の背後のルール、import 指定子が名指すもの、抑制コメントのルール id、`uf.config.js` のキー | lint ルール、モジュールレジストリ、`@uniflowed/config` |
+| 補完 | **`uf.config.js` 内のみ**: カーソル位置で有効なキーと型、固定集合の値、`runtime: "node@26"` のようなツール指定でツール名と（`@` の後で）版 | `@uniflowed/config` の Flow 型（バイナリに埋め込み）、版はキャッシュしたリリース一覧 |
+
+<Callout kind="gap" title="答えないもの">
+定義ジャンプ、リネーム、参照検索、ドキュメントシンボル、位置の型、`uf.config.js` 以外での補完。最初の 5 つは advertise もされず、要求すれば待たせず拒否します。型はターミナルの `uf check` で見ます。
+</Callout>
+
+## どの設定を読むか
+
+サーバーは起動時に一度だけ設定を読みます。`--cwd` かワーキングディレクトリから、最寄りの `uf.config.js` / `package.json` / `.git` まで上に歩きます。
+
+- **`uf.config.js` を編集したら再起動が必要。** VS Code 拡張はファイルを監視して自動で再起動します。
+- **読めない設定は報告されない。** デフォルトにフォールバックし、黙ってそれで整形・lint します。エディタで整形してターミナルで `uf fmt --check` を走らせ、食い違えば別のものを読んでいます。
+- **歩行は最初の `package.json` で止まる。** ワークスペースで自前の `package.json` があり `uf.config.js` がないメンバーは、ルートの設定ではなくデフォルトを得ます。
+
+プロジェクトの ignore リストもサーバーには届きません。開いたファイルは `uf lint` がスキップするものでも lint されます。
+
+## VS Code と Cursor
+
+`editors/vscode` の拡張。Marketplace / Open VSX にはまだ公開されていません（#977）ので、ソースからビルドします。
+
+```sh
+cd editors/vscode
+npm install
+npx @vscode/vsce package        # uf-0.0.0.vsix
+code --install-extension uf-0.0.0.vsix     # Cursor は cursor --install-extension
+```
+
+`uf.config.js` を含むワークスペースで活性化し、ルートに `uf.config.js` があるフォルダごとに 1 サーバーを起動します。
+
+| 設定 | デフォルト | |
+| --- | --- | --- |
+| `uf.server.path` | `""` | uf バイナリ。空なら `node_modules/.bin/uf` → PATH の順に探す |
+| `uf.formatOnSave` | `false` | 保存時にサーバーで整形 |
+| `uf.trace.server` | `"off"` | `messages` / `verbose` で通信ログ |
+
+保存時に全安全修正を適用するには:
+
+```json
+"editor.codeActionsOnSave": { "source.fixAll.uf": "explicit" }
+```
+
+## Neovim
+
+`editors/neovim/lua/uf.lua`。コアの `vim.lsp.start` のみで、プラグインマネージャも nvim-lspconfig も不要です。
+
+```lua
+require("uf").setup({
+  cmd = { "./node_modules/.bin/uf", "lsp" }, -- 省略可。デフォルトは PATH の "uf"
+  format_on_save = true,                     -- 省略可。デフォルト off
+})
+```
+
+filetype が `javascript` / `javascriptreact` で、上位に `uf.config.js` があるバッファにクライアントが付きます。
+
+## Vim
+
+`editors/vim/uf.vim`（vim-lsp 向け）。vim-lsp は Vim のワーキングディレクトリでサーバーを起動するので、`uf.vim` は `uf lsp --cwd <root>` で最寄りの `uf.config.js` のディレクトリを渡します。
+
+## Helix
+
+`editors/helix/languages.toml` をプロジェクトの `.helix/` かグローバル設定にコピー。JavaScript / JSX のデフォルトサーバーを uf に置き換え、`uf.config.js` をルートにし、書き込み時に整形します。
+
+## Emacs
+
+`editors/emacs/uf.el`。Eglot（Emacs 29 内蔵）か lsp-mode 向け。`M-x uf-start` で開始。
+
+## Zed
+
+**動きません。** `editors/zed` にマニフェストはありますが、言語サーバーを提供する Zed 拡張には WebAssembly にコンパイルした Rust 側が必要で、それは書かれていません（#977）。当面は `uf fmt` / `uf lint` / `uf check` を Zed のターミナルからタスクとして走らせます。

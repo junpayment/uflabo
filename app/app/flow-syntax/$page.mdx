@@ -1,0 +1,125 @@
+---
+title: "Flow のモダンな構文"
+description: "component, hook, renders, match, enum。それぞれ何のためにあり、uf が Vite に渡す前に何へ変換するか。"
+section: "app"
+order: 1
+source: "/guide/flow"
+---
+
+uf は Flow が React のために追加した構文を中心に組まれています。このページは各構文の目的と、uf がそれを正確に何へ落とすかです。
+
+## component
+
+component 宣言は、引数が props になる関数です。
+
+```js
+// @flow
+export component Avatar(src: string, size: number = 32, alt?: string) {
+  return <img src={src} width={size} height={size} alt={alt ?? ""} />;
+}
+```
+
+Flow は引数リストから props の型を推論するので、シグネチャと同期させる別の `Props` オブジェクトはありません。足りない prop は呼び出し側でその引数名を含むエラーになり、デフォルト値は引数を宣言した場所にあります。
+
+rest props は読まれる通りに書きます。
+
+```js
+type InputProps = {| readonly name: string, readonly required?: boolean |};
+
+export component Field(label: string, ...input: InputProps) {
+  return (
+    <label>
+      {label}
+      <input {...input} />
+    </label>
+  );
+}
+```
+
+rest 引数はオブジェクト型でなければならず、属する要素に spread されます。つまり `Field` が転送する props は「たまたま渡されたもの」ではなく宣言されたものです。
+
+uf は component を素の関数に落とし、そして（ここが重要）**公式 React Compiler に「既知のコンポーネント」として渡します**。メモ化は大文字の名前からの推測ではなく component 宣言を見ます。
+
+## hook
+
+hook 宣言は、Flow がコンポーネントか別の hook からしか呼ばせない関数です。
+
+```js
+export hook useNow(interval: number): Date {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), interval);
+    return () => clearInterval(id);
+  }, [interval]);
+  return now;
+}
+```
+
+hook のルールは「インストールしているかもしれない lint ルール」ではなく、無視できない型エラーになります。component と同様、uf は `use` プレフィックスから推測させるのではなく宣言を React Compiler に渡します。
+
+## renders
+
+render 型は、コンポーネントが何を返してよいかを言い、親が特定の子を要求できるようにします。
+
+```js
+component Tab(label: string) renders React.Node { ... }
+component Tabs(children: renders* Tab) { ... }
+```
+
+| 書き方 | 意味 |
+| --- | --- |
+| `renders Tab` | ちょうど 1 つ |
+| `renders? Tab` | 0 か 1 つ |
+| `renders* Tab` | 任意個 |
+
+`renders Tab` が期待される場所に `<Button />` を渡すのは、実行時の驚きではなく型エラーです。コンポーネントライブラリが「この 2 つは一緒にしか意味をなさない」を表現する方法です。
+
+## match
+
+`match` は式であり、網羅的です。
+
+```js
+const label = match (status) {
+  "idle" => "Ready",
+  "loading" => "Working…",
+  {kind: "failed", code} if code >= 500 => "Server error",
+  {kind: "failed"} => "Failed",
+};
+```
+
+分割代入し、`if` でガードし、ケースが欠けていれば Flow が拒否します。Flow enum に対する match でケースを落とすとコンパイルが通らないので、バリアントの追加は「検索」ではなく「コンパイラに導かれる作業」になります。
+
+uf は match を条件分岐と一時変数に落とし、対象を一度だけ評価します。
+
+## enum
+
+Flow の enum は実行時を持つ本物の値です。
+
+```js
+enum Status {
+  Idle,
+  Loading,
+  Failed,
+}
+
+Status.cast(input);      // Status | void
+Status.members();        // イテレータ
+Status.Idle.toString();  // "Idle"
+```
+
+網羅的にチェックでき、素の文字列と偶然比較できず、文字列リテラルの union とは違って実行時に存在するので反復できます。
+
+約 20 行のランタイムが必要で、uf はそれをパッケージから import するのではなく、enum を宣言する各モジュールの先頭に付け足します。アップストリームの Hermes は `require("flow-enums-runtime")` を出しますが、CommonJS の呼び出しはブラウザや ES モジュールにはできません。そこで `enum Status { Active, Off }` は `const Status = $$ufEnumMirrored(["Active", "Off"])` になり、`$$ufEnumMirrored` 自身のコピーが横に置かれます。インストールも解決も不要で、コンパイラと版が食い違い得るパッケージもありません。
+
+## uf がすべてに対してすること
+
+すべての Flow ファイルは、Rust の中の 1 本のパイプラインを通ります。Babel はどこにもありません。
+
+| 段階 | 担当 |
+| --- | --- |
+| Parse | `flow_parser` — Flow 自身が使う Meta 製パーサー |
+| Lower | Hermes のパスの移植: component, hook, match, enum、それから型の剥がし |
+| Optimize | 公式 React Compiler クレート、syntax モード |
+| Emit | oxc — JSX 自動ランタイム、dev の Fast Refresh、コード生成、ソースマップ |
+
+dev サーバー、本番ビルド、テストランナー、ホスト上で Flow モジュールを import するすべてが同じパイプラインを走ります。ソースマップは全段階で合成されるので、テスト失敗のスタックトレースも dev サーバーのブレークポイントも、あなたが書いた行に着地します。

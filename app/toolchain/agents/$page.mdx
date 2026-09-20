@@ -1,0 +1,98 @@
+---
+title: "エージェント（uf mcp）"
+description: "uf mcp は Model Context Protocol を stdio で提供する。コーディングエージェントが人と同じチェック（lint、型チェック、テスト、ルートテーブル）を走らせ、CI が読むのと同じ JSON レポートを読める。8 ツール、うち 2 つが書く。"
+section: "toolchain"
+order: 9
+source: "/guide/agents"
+---
+
+## 登録する
+
+`uf mcp` はクライアントが起動し、stdin / stdout 越しに 1 行 1 メッセージの JSON-RPC で話します。デーモンではなくポートもありません。ターミナルに打ち込むと、向こう側にクライアントがいないのでそう言って終了します。
+
+```
+uf mcp: Model Context Protocol stdio server ready
+```
+
+プロジェクトはサーバー起動時に一度決まります。起動したディレクトリか `--cwd` が名指すディレクトリから、最寄りの `uf.config.js` / `package.json` / `.git` まで上に歩きます。クライアントが後から送るものは何もそれを変えません。
+
+```sh
+claude mcp add uf -- uf --cwd /path/to/project mcp
+```
+
+プロジェクトスコープの `.mcp.json` はコミットされ共有されるので、あなたの絶対パスを運べません。それなしで書くと、クライアントがサーバーを起動するディレクトリで `uf mcp` が走り、uf はそこから上に歩きます。
+
+```json
+{
+  "mcpServers": {
+    "uf": { "command": "uf", "args": ["mcp"] }
+  }
+}
+```
+
+答えが間違ったディレクトリについてに見えるなら `uf_info` を呼んでください。サーバーが与えられたワーキングディレクトリを印字します。
+
+## ツール
+
+`tools/list` は 8 つを名指しし、**各説明はあなたのチェックアウトに何をするかを言う一文で終わります。**
+
+| ツール | 走らせるもの | 引数 | 説明の末尾 |
+| --- | --- | --- | --- |
+| `uf_check` | `uf check --json` | paths | Changes none of your files, … |
+| `uf_lint` | `uf lint --json` | paths | Changes none of your files, … |
+| `uf_info` | `uf info` | — | Changes none of your files, … |
+| `uf_routes` | `uf routes list` | — | Changes none of your files, … |
+| `uf_explain` | `uf explain <command> --json` | command（必須） | Changes none of your files, … |
+| `uf_test` | `uf test --json` | filter, paths | **RUNS the project's own code.** |
+| `uf_fmt_write` | `uf fmt` | paths | **WRITES to files in the checkout.** |
+| `uf_lint_fix` | `uf lint --fix --json` | paths | **WRITES to files in the checkout.** |
+
+最初の 5 つは「Changes none of your files, though uf may write its own cache under `.uf/cache/`」で終わり、`uf_check` の説明は保つもの（推論結果、`.uf/cache/check/`）を名指しします。
+
+`paths` はコマンドライン自身の PATH 引数と同じように、パスが文字列のどれかを含むファイルにコマンドを絞ります。`uf_lint_fix` は安全な修正だけを適用します。unsafe 層はツールではありません。`uf build` `uf dev` `uf install` `uf fmt --check` のツールはなく、サーバーは resource も prompt も提供しません。
+
+## 呼び出しが返すもの
+
+ツールの結果はテキストブロックのリストと `isError` フラグです。最初のブロックはコマンドが印字したもの。`uf_check` `uf_lint` `uf_lint_fix` `uf_explain` `uf_test` は JSON、他の 3 つはコマンド自身のテキスト。**失敗したコマンドは最初のブロックにレポートを丸ごと保ち、理由を 2 番目のブロックとして足す**ので、JSON は依然パースできます。
+
+```
+tools/call uf_lint {"paths":["app/"]}
+isError: false; blocks: 1
+{
+  "command": "uf lint",
+  "filesChecked": 6,
+  "errors": 0,
+  …
+}
+
+tools/call uf_check {"paths":["app/price.js"]}
+isError: true; blocks: 2
+errors: 1; typeCheck.status: checked
+first type diagnostic: incompatible-type at app/price.js:2:30
+second block: "uf check failed with 1 error"
+```
+
+失敗したチェックは、プロトコルエラーではなく普通の結果の中の `isError: true` です。**呼び出しは機能し、その答えが「プロジェクトはチェックを通らない」なのです。** 存在しないツールも同じように答えられ、`inputSchema` に合わない引数の呼び出しも（引数を名指しし、何も走らせない）。サーバーがまったく答えを持たないメソッドだけが JSON-RPC エラーです。
+
+```
+tools/call uf_build
+← {"result":{"content":[{"type":"text","text":"no tool named \"uf_build\""}],"isError":true}}
+tools/call uf_lint {"pathz":["app/"]}
+← {"result":{"content":[{"type":"text","text":"uf_lint did not run: `pathz` is not an argument; the arguments are `paths`"}],"isError":true}}
+resources/list
+← {"error":{"code":-32601,"message":"this server has no method \"resources/list\""}}
+```
+
+`uf_check` が返すレポートの罠は [型チェック](/toolchain/check) と同じです。`errors` は `diagnostics` の lint の発見と `typeCheck.diagnostics` の型エラーの**合計**です。
+
+## エージェントが仮定してはならないこと
+
+これらがサーバーの現状の限界で、欠陥であるものには issue があります。
+
+- **`paths` はプロジェクト内に留まる（MCP 経由では）。** 絶対パス、`..` で外に出るもの、シンボリックリンクで外に導くものは、何かが読まれる前にエントリを名指して拒否されます。コマンドラインの `uf fmt ../elsewhere` は依然言った通りにします。人が打ったからです。**プロジェクト内には確認ステップも allow-list も読み取り専用モードもない**ので、ツールが書く前に尋ねるクライアントだけが守りです。
+- **「ファイルを変えない」は「何も書かない」ではない。** `uf_check` は `.uf/cache/check/` に推論キャッシュを書き、`uf_test` は `.uf/test-timings.json` と、テスト自身が書くものを書きます。
+- **`uf_info` はプロジェクトを説明しない。** uf のバージョン、マシン、ワーキングディレクトリを印字し、`uf.config.js` を読みません。コマンドが何をするかとなぜかを言うのは `uf_explain` です。
+- **`uf_test` はあなたのプロジェクトが与えるアクセスであなたのテストを走らせる。** プロジェクトがインストールされている必要があり、権限が宣言されていないホストではテストが届くものを何も制限しません。
+- **一度に 1 呼び出し。** サーバーはリクエストを順に答えるので、長い `uf_test` は後ろのすべての呼び出しを止め、`notifications/cancelled` は何もキャンセルしません。
+- **警告は結果に入らない。** コマンドやテストワーカーが stderr に書くものはサーバーの stderr に行き、クライアントが見せるかもしれないし見せないかもしれません。
+- **プロトコルバージョンは 1 つ。** クライアントが何を尋ねてもサーバーは `2024-11-05` で答えます。

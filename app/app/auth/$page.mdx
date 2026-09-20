@@ -1,0 +1,131 @@
+---
+title: "サインイン（OAuth）"
+description: "uf は OAuth フローを出荷し、OAuth プロバイダは出荷しない。ポータブルなのはリダイレクト、state、トークン交換、セッション。ポータブルでないのはどの URL に話し、トークンをどう人に変えるか。"
+section: "app"
+order: 15
+source: "/guide/auth"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+## プロバイダ
+
+これがすべてです。uf のことは何も出てこず、あなたのプロバイダのことは uf に何も出てきません。
+
+```js
+// @flow
+import type { OAuthProvider } from "@uniflowed/server/oauth";
+
+export const example: OAuthProvider = {
+  authorizationEndpoint: "https://example.com/oauth/authorize",
+  tokenEndpoint: "https://example.com/oauth/token",
+  clientId: process.env.EXAMPLE_CLIENT_ID ?? "",
+  clientSecret: process.env.EXAMPLE_CLIENT_SECRET,
+  scope: "openid email",
+  async identify(tokens) {
+    const answer = await fetch("https://example.com/userinfo", {
+      headers: { authorization: `Bearer ${tokens.accessToken}` },
+    });
+    if (!answer.ok) throw new Error(`userinfo answered ${answer.status}`);
+    const user = await answer.json();
+    return { subject: String(user.id), claims: { email: user.email } };
+  },
+};
+```
+
+uf に `providers/` ディレクトリはなく、今後もありません。そのレジストリは uf が最新に保たなければならないリストで、ある会社と統合するツールチェーンは、その会社の API の変更がすべて通るリリースの場所になります。`docs/red-lines.md` はそれを関所と呼びます。
+
+`subject` はプロバイダ自身の安定 id で、**意図的にメールアドレスではありません**。メールは人が変えるもので、一部のプロバイダは証明なしに誰でも claim させるので、それでアカウントをキーするアプリはアカウント乗っ取りを待っています。メールは `claims` に。
+
+## 4 つのハンドラ
+
+<Figure title="app/auth.js">
+
+```js
+// @flow
+import { createAuth, memorySessionStore } from "@uniflowed/server/oauth";
+import { example } from "./providers/example.js";
+
+export const auth = createAuth({
+  provider: example,
+  store: memorySessionStore(),
+  callbackPath: "/auth/callback",
+  origin: process.env.PUBLIC_ORIGIN,
+});
+```
+
+</Figure>
+
+各ハンドラは素の `Request → Response` で、`$route.js` が export するものであり、Node / Bun / Deno / ワーカーで変更なしに動くものです。
+
+```js
+// app/auth/authorize/$route.js
+export const GET = auth.authorize;
+
+// app/auth/callback/$route.js
+export const GET = auth.callback;
+
+// app/auth/refresh/$route.js
+export const POST = auth.refresh;
+
+// app/auth/session/$route.js
+export const GET = auth.session;
+export const DELETE = auth.session;
+```
+
+`/auth/authorize?return=/orders` は終わったら `/orders` に戻ります。自サイトのパスだけ受け付け、それ以外は `/` に着地します。
+
+## 誰がサインインしているか読む
+
+loader、ルートハンドラ、server component から。リクエストは何も通しません。`@uniflowed/server` は自分がいるリクエストについて答えるからです。
+
+```js
+// @flow
+import { auth } from "../auth.js";
+
+export async function loader() {
+  const session = await auth.currentSession();
+  return { greeting: session == null ? "Hello" : `Hello, ${session.subject}` };
+}
+```
+
+これを尋ねるページは 1 人についてのページなので、uf はルートキャッシュに入れません。
+
+`session.expiresAt` は `Temporal.Instant` なので、「もう切れそうか」は単位を信用するしかない数値の算術ではなく `Temporal.Instant.compare` です。
+
+**トークンはセッション上にありません。** ストアにあり、`auth.tokens()` がプロバイダの API を本当に呼ぶ必要のあるアプリのための別名の reader です。そこから返ったものを loader から決して返さないでください。loader の値は uf がブラウザに送るドキュメントに埋め込まれるので、そこに届いたトークンは公開されています。
+
+## ストア
+
+4 メソッド、1 値型、中身は uf が所有するので、Redis やテーブルやワーカーの KV に対する実装は OAuth を何も知りません。
+
+```js
+// @flow
+import type { SessionStore } from "@uniflowed/server/oauth";
+
+export const store: SessionStore = {
+  read: async (key) => decode(await redis.get(key)),
+  write: async (key, value, expiresAt) => void (await redis.set(key, encode(value), "PXAT", expiresAt)),
+  take: async (key) => decode(await redis.getdel(key)),
+  destroy: async (key) => void (await redis.del(key)),
+};
+```
+
+`take` が他から合成できない 1 つで、state パラメータを単一使用にするものです。読んで削除を一手で行うので、再生されたコールバックは何も見つけず、同時に 2 つ届いても両方成功できません。読んでから削除、と書けばその間に窓があり、窓があれば再生には十分です。**一操作でできない実装をここに使ってはいけません。**
+
+`memorySessionStore()` は 1 プロセスのメモリで、それがすべての真実です。ロードバランサの後ろの 4 インスタンスは 4 組の異なるセッションを持ち、再起動は全員をサインアウトさせ、別インスタンスに着地した途中のサインインは再生として拒否されます。インターフェースが成果物です。
+
+## uf が拒否するもの
+
+サインインは uf の中で「間違いが誰かのアカウント」になる唯一の場所なので、拒否は信じるのではなく読む価値があります。各項目は `packages/server/oauth.test.js` でテストされ、`docs/security.md` が答える失敗を名指しします。
+
+- **PKCE、常に、S256。** 設定はなく `plain` は提供されない。plain チャレンジは verifier そのものなので、認可 URL を読めるものはコードを使える。
+- **state は `crypto.getRandomValues` の 256 ビット**、サーバー側で保持、constant-time 比較、単一使用。
+- **保留中のフローは始めたブラウザに束縛される。** state はコールバックがプロバイダから来たことを証明し、Cookie だけが出発した人に戻ったことを証明する。
+- **`__Host-` Cookie、HttpOnly、Secure、Path=/、SameSite=Lax。** Lax は好みではなく必須。プロバイダからの戻りはクロスサイトのトップレベル遷移で、Strict はまさにその 1 回で Cookie を渡さない。
+- **`Origin` は `Host` と比較し、`X-Forwarded-Host` とは決して比較しない**、状態を変えるすべてで。`Origin` のないリクエストは拒否。
+- **`redirect_uri` は保存した記録から**、コールバックのヘッダから再導出しない。
+- **サインインごとに新しいセッション id**、前のセッションは破棄。
+- **すべてのレスポンスに `Cache-Control: no-store, private`**、body にもログ行にもトークンなし。
+
+uf がしないのは **OpenID Connect の `id_token` の検証**です。JWKS の fetch、キャッシュ、アルゴリズムの allow-list、`alg: none` の拒否が必要で、その半分は何もないより悪い。生のトークンはあなたの `identify` に渡され、uf はそれについて何も主張しません。

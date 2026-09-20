@@ -1,0 +1,159 @@
+---
+title: "依存管理"
+description: "uf はパッケージを解決も取得もしない。uf install や uf add はプロジェクトがすでに使っているパッケージマネージャを見つけて実行し、その前にポリシーを置く。install スクリプトは拒否、CI でズレたロックファイルは拒否、コマンドを持たないマネージャは「持たない」と言う。"
+section: "toolchain"
+order: 5
+source: "/guide/dependencies"
+---
+
+## どのマネージャが走るか
+
+最初に何か言うものが決めます。
+
+1. `uf.config.js` の `packageManager`（例: `"pnpm@10"`）
+2. `uf.config.js` の `pm.packageManager`（古い綴り）
+3. `package.json` の `packageManager` フィールド（例: `"bun@1.3.13"`）
+4. プロジェクトルートのロックファイル: `bun.lock` `bun.lockb` `pnpm-lock.yaml` `yarn.lock` `package-lock.json` `npm-shrinkwrap.json` の順
+5. 上のどれかを言うワークスペースルート
+6. npm
+
+マネージャを走らせるすべてのコマンドは、何を選んだかとなぜかを `chosen by` 行に印字します。`packageManager: "pnpm@10"` はリリースも固定でき、`uf.lock` にロックされ uf のストアに入れられ、全マシンが同じ pnpm をプロジェクトのランタイム上で走らせます（[環境](/toolchain/environments)）。
+
+## インストール
+
+```
+uf install · shop
+─────────────────
+
+  manager    npm
+  chosen by  no lockfile or packageManager field
+  command    npm install --ignore-scripts --loglevel=http
+  runtime    node · …/node/26.8.1/bin/node
+  lockfile   package-lock.json · 243 packages · 138.07 kB
+  plan       …/shop/.uf/install.json
+
+  config    ························ 565.5µs
+  resolve   ························   3.68s
+  fetch     ························   1.71s
+  link      ························  62.1ms
+  total     ························   8.35s
+
+  dependency tree
+    added  241
+
+  provenance
+    attested  78
+    unknown   165
+
+✓ dependencies installed in 8.35s
+```
+
+resolve / fetch / dependency tree の節は npm 自身の出力とロックファイルを読んで出るので npm で現れます。pnpm / Yarn / Bun はターミナルに直接書き、サマリは行・uf が自分で計測できる時間・次のステップです。`.uf/install.json` はマネージャが走る前に書かれ、失敗後にも読めます。
+
+## CI では: ロックファイルが固定するものを正確に
+
+`uf install --frozen-lockfile` はロックファイルが固定するものをインストールし、manifest がそこから動いていたら黙って差を解決せずに失敗します。
+
+| マネージャ | 実行されるもの |
+| --- | --- |
+| npm | `npm ci` |
+| pnpm | `pnpm install --frozen-lockfile` |
+| Yarn 1 | `yarn install --frozen-lockfile` |
+| Yarn 2+ | `yarn install --immutable` |
+| Bun | `bun install --frozen-lockfile` |
+
+それぞれ `--ignore-scripts` つき。[CI](/toolchain/ci) がこれがすべてのチェックの前に来る理由を説明します。何もインストールされていない `uf check` は解決できない import をすべて `any` として型付けするからです。
+
+## スクリプト
+
+install 時のライフサイクルスクリプトを宣言する `package.json` は、何かを取得する前に拒否されます。`uf install` `uf add` `uf remove` `uf update` `uf catalog set` `uf patch --commit` すべてで。プロジェクトの自動化は `tasks` に属し、install 時スクリプトは clone したばかりのリポジトリが誰も読んでいないコードを走らせる方法です。
+
+依存の install スクリプトも off です。インストールするすべてのコマンドがマネージャに `--ignore-scripts` を渡します（Yarn 2+ は `YARN_ENABLE_SCRIPTS=false`、pnpm の一部コマンドは `--config.ignore-scripts=true`）。本当にビルドが必要な依存もあり、`uf pm approve-builds` がツリー内で install 時にコードを走らせるものを列挙します。
+
+```
+uf pm approve-builds · shop
+───────────────────────────
+
+  manager       npm
+  approvals in  nothing: it is all or none
+
+  package              version  runs     approved  attested
+  acorn                8.18.0   prepare  no        unknown
+  lightningcss         1.33.0   prepare  no        unknown
+  rollup               4.63.2   prepare  no        yes
+
+› 8 packages would run code at install time and are not approved, so uf does not let them run
+! npm cannot approve one and not another: `--ignore-scripts` is all of them or none
+```
+
+pnpm / Bun / Yarn 2+ では `uf pm approve-builds esbuild` がそのマネージャが読むフィールド（`pnpm.onlyBuiltDependencies`、`trustedDependencies`、`dependenciesMeta`）に名前を記録し、次のインストールはまさにその一覧をビルドします。npm と Yarn 1 にはそのリストがないので、名指しの承認は「全パッケージ」に変換される代わりに拒否されます。`pm.allowLifecycleScripts: true` が両方の拒否を一度に解く唯一のスイッチです。
+
+## 追加と削除
+
+```
+$ uf add --dev is-number@6
+
+  manager    npm
+  chosen by  package-lock.json
+  command    npm install --save-dev --ignore-scripts is-number@6
+
+  manifest
+       field            package    range
+    +  devDependencies  is-number  ^6.0.0
+
+✓ 1 package recorded in devDependencies in 419.6ms
+```
+
+`--dev` `--optional` `--peer` がフィールドを選びます。指定子は書かれた通りマネージャに渡り、`-` で始まるものは拒否されます（マネージャがフラグとして読むから）。`uf remove` は列挙するすべてのフィールド、ロックファイル、`node_modules` から名前を取り除きます。
+
+ワークスペースでは `--filter` が変更するメンバーを選び（`uf run --filter` と同じセレクタ）、`-w` がワークスペースルートを選びます。`uf link ../ui` は開発中のパッケージをプロジェクトにリンクし、`uf dedupe --check` は CI 向けです。
+
+## ツリーについて尋ねる
+
+`uf why` `uf ls` `uf audit` は質問をツリーを解決したマネージャに渡すので、答えは実際にインストールされたものについてです。パッケージ名だけを取り、名前の後のフラグは拒否されます（`pnpm audit --fix` はロックファイルを書き換えるなど、uf はどれが読むだけか判別できないから）。
+
+`uf audit` はマネージャが advisory を報告すると 1 で終了します。`uf search` は npm と pnpm のもので、Yarn と Bun にはレジストリ検索がないので uf はそう言い、プロジェクトが選んでいないマネージャを走らせません。
+
+| コマンド | npm | pnpm | Yarn 1 | Yarn 2+ | Bun |
+| --- | --- | --- | --- | --- | --- |
+| `uf install` | `npm install` | `pnpm install` | `yarn install` | `yarn install` | `bun install` |
+| `uf add` | `npm install` | `pnpm add` | `yarn add` | `yarn add` | `bun add` |
+| `uf remove` | `npm uninstall` | `pnpm remove` | `yarn remove` | `yarn remove` | `bun remove` |
+| `uf update` | `npm update` | `pnpm update` | `yarn upgrade` | `yarn up` | `bun update` |
+| `uf dedupe` | `npm dedupe` | `pnpm dedupe` | 拒否 | `yarn dedupe` | 拒否 |
+| `uf why` | `npm explain` | `pnpm why` | `yarn why` | `yarn why` | `bun why` |
+| `uf ls` | `npm ls` | `pnpm list` | `yarn list` | `yarn info --all` | `bun pm ls` |
+| `uf audit` | `npm audit` | `pnpm audit` | `yarn audit` | `yarn npm audit` | `bun audit` |
+| `uf search` | `npm search` | `pnpm search` | 拒否 | 拒否 | 拒否 |
+| `uf patch` | 拒否 | `pnpm patch` | 拒否 | `yarn patch` | 拒否 |
+
+## 更新
+
+フラグなしの `uf update` はマネージャ自身の更新（範囲内の最新へ、`package.json` は触らない）に続けて、範囲が許すより新しいものの報告です。`--dry-run` は報告だけ。
+
+```
+$ uf update --dry-run
+
+  outside the range
+
+  package    declared  newest  step
+  is-number  ^6.0.0    7.0.0   major
+
+› uf update --latest rewrites the ranges; --minor and --patch cap the step
+```
+
+`--latest` `--minor` `--patch` は範囲をそのステップまで書き換えてインストールし、プロジェクトが選んだコンパレータを保ちます（`^6.0.0` → `^7.0.0`）。uf はこの報告のためにレジストリを自分で HTTPS で読みます。`pm.registry` からで、`.npmrc` からではありません。
+
+## レジストリと出所
+
+`pm.scopes` はスコープをレジストリに束縛し、`uf install` は束縛されたスコープのパッケージを別の場所から解決した `package-lock.json` を拒否します。依存混乱攻撃の形です。uf はトークンを決して読まず送りません。
+
+`pm.provenance` のデフォルト `report` では、`uf install` は npm ロックファイルから追加・更新した各パッケージの npm attestation を読みます（最大 250）。statement はパッケージとロックファイルの SHA-512 を名指ししなければならず、不一致はインストールを止めます。Sigstore 署名自体は検証しません。
+
+## ここにないもの
+
+- uf 自身のリゾルバ。取得できず、`uf.lock` は各ワークスペース manifest のハッシュだけを持つ
+- これらのコマンドの `--json`
+- マネージャの終了ステータス。失敗したマネージャは何を返しても uf を 1 で終了させる
+- uf 自身のテストでの pnpm / Yarn / Bun のエンドツーエンド実行。コマンドラインはユニットテストされ、npm が実際に運転される
+- 公開。`uf publish` は `.uf/publish.json` に計画を書き、何も公開しない

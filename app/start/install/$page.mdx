@@ -1,0 +1,119 @@
+---
+title: "インストール"
+description: "uf は 1 つのネイティブバイナリ。JavaScript ホスト（Node.js / Bun / Deno）は必要だが、それ経由でインストールはしない。"
+section: "start"
+order: 1
+source: "/guide/install"
+---
+
+## 必要なもの
+
+- **macOS または Linux**、x86-64 か ARM64。Windows ビルドはありません（WSL2 は動きます）。
+- **Node.js か Bun。** uf は Rust でパース・変換・スケジューリング・レポートを行い、Vite とテスト本体を JavaScript ホストに渡します。Deno は 2.8 以降で対応しますが、`uf dev` / `uf build` のローダーはまだありません（#246）。
+- **React の知識。** ドキュメントは Flow の `component` / `hook` 構文を初出箇所で説明しますが、コンポーネント・hook・prop が何かは知っている前提です。
+
+## リリースから入れる
+
+タグ付きリリースごとに macOS と Linux、x86-64 と ARM64 のバイナリが公開されます。
+
+```sh
+curl -fsSL https://setup.uniflowed.dev | sh
+```
+
+スクリプトはプラットフォームに合うバイナリを選び、検証して PATH に置きます。sh / bash / zsh で動きます。短いので先に読むことを公式も勧めており、`https://setup.uniflowed.dev/install.sh` から取得できます。
+
+### 何を検証し、何が証明されるか
+
+2 つの別々のことを検査します。2 つの別々の問いに答えるからです。
+
+- **アーカイブ横の SHA-256 は「転送」を証明します。** 届いたバイトがホストの広告したバイトであること。切れたダウンロードや壊すプロキシを捕まえます。「出所」は何も証明しません。アーカイブとチェックサムは同じホストから来るので、片方を差し替えられる者は両方を差し替えられます。
+- **署名は「出所」を証明します。** すべてのリリースアーカイブは、リリースワークフロー自身の GitHub OIDC アイデンティティによる keyless Sigstore で署名され、インストーラはそのアイデンティティに対してバンドルを検証します。**cosign をインストールすると検査が走り**、なければ「署名は検査しなかった」と明言します。
+
+| 変数 | デフォルト | 意味 |
+| --- | --- | --- |
+| `UF_VERIFY_ORIGIN` | `auto` | `require` で出所が確立できないインストールを拒否。`off` で検査を省略 |
+| `UF_CHECKSUM_BASE` | 未設定 | アーカイブを配信しない別ホストにある `<base>/<version>/<asset>.sha256` レイアウト。2 つのダイジェストは一致しなければならない |
+| `UF_VERSION` | `latest` | 特定のリリース |
+| `UF_RELEASE_BASE` | 未設定 | フラットな `<base>/<version>/<asset>` レイアウトのミラー |
+| `UF_INSTALL_ROOT`, `UF_BIN_DIR` | XDG パス | ランタイムと shim の置き場所 |
+
+存在するのに検証できない署名は、`UF_VERIFY_ORIGIN` が何であれ常に拒否されます。デフォルトが `require` ではなく `auto` なのは、署名が導入される前のリリースにはバンドルがなく、それらを拒否するデフォルトでは古い `UF_VERSION` を固定した人がインストール不能になるからです。今日 `UF_VERIFY_ORIGIN=require` を渡せば厳しい挙動になり、それがいずれデフォルトになります。
+
+### Windows では
+
+Windows ビルドはまだありません。`irm https://setup.uniflowed.dev/install.ps1 | iex` は解決します（URL が有用なことを言うように意図的に）が、同じことを伝えるエラーを出します。動く道は 2 つ: WSL2 で Linux 版を使うか、後述の `cargo install` でソースからビルドするか。
+
+### 更新と巻き戻し
+
+```sh
+uf self-update            # 同じスクリプト・同じ検証で最新へ。uf, ufr, ufx を切り替える
+uf self-update --check    # 新しいリリースがあるか調べるだけ
+uf self-update 0.0.0-alpha.35   # 特定の版へ
+uf self-update --rollback # ネットワークなしで直前の版に戻す
+```
+
+更新で置き換えられた版は `~/.local/share/uf/runtimes` のストアに残り、その横に記録されます。切り替えは各リンクを古いものの上に rename し、`uf` を最後に、ランタイム全体を丸ごと rename でストアに入れます。中断された更新は古い版か新しい版のどちらかが動く状態を残し、「何も指していない uf」にはなりません。
+
+### アンインストール
+
+```sh
+uf self-uninstall            # 消すもの（リンク、ランタイム、ツールチェーンストア）を列挙して確認し、消す
+uf self-uninstall --dry-run  # 列挙だけ
+```
+
+インストーラはシェルプロファイルを決して編集しないので、取り除くべき uf の行はありません。
+
+## Nix で
+
+リポジトリは flake で、それがインストールのすべてです。Rust ツールチェーンを固定し、Meta の Flow 移植を uf がビルドしたコミットで取得し、uf のパッチを当てるので、どこでビルドしても同じビルドになります。
+
+```sh
+nix run github:ubugeeei-prod/uf              # インストールせずに実行
+nix profile install github:ubugeeei-prod/uf  # プロファイルに入れる
+```
+
+NixOS / nix-darwin では `nixosModules.default` / `darwinModules.default`、home-manager では `homeManagerModules.default` が同じオプションを取ります。
+
+```nix
+{
+  inputs.uf.url = "github:ubugeeei-prod/uf";
+  imports = [ inputs.uf.nixosModules.default ];
+  programs.uf.enable = true;
+}
+```
+
+バイナリキャッシュはまだないので、初回ビルドは Flow パーサーと React Compiler をソースからコンパイルし、時間がかかります。リリース tarball が速い道、こちらが再現可能な道です。
+
+## ソースから
+
+Nix なしで。uf は固定した **nightly Rust** でビルドします（Flow のクレートが未安定の `box_patterns` を必要とするため）。Flow と React Compiler のソースは submodule です。
+
+```sh
+git clone --recurse-submodules https://github.com/ubugeeei-prod/uf
+cd uf && cargo build --release --bin uf
+```
+
+リポジトリの toolchain ファイルが正しい nightly を選ぶので、rustup が初回ビルドで取得します。
+
+## JavaScript ホスト
+
+| ホスト | dev / build | テスト | 備考 |
+| --- | --- | --- | --- |
+| Node.js | ○ | ○ | デフォルト。Flow モジュールは `module.registerHooks()`（22.15 未満は `module.register()`）で読み込む |
+| Bun | ○ | ○ | `--preload` プラグインで読み込む |
+| Deno | 2.8 から ○ | 2.8 から ○ | `node:module` の `registerHooks` を Deno 2.8 が実装。`uf test --coverage` は Node 専用、ネイティブアドオンを import するテストは Deno で失敗（#246） |
+
+uf は利用可能なものを検出して 1 つ選びます。プロジェクトをホストに固定するには:
+
+```sh
+uf use bun   # uf.config.js に選択を書き込む
+uf info      # 検出されたものと選ばれたものを表示
+```
+
+## インストールの確認
+
+```sh
+uf info
+```
+
+バージョン、解決されたホスト、見つかったプロジェクトを印字します。「プロジェクトなし」と出たらプロジェクトの外にいるだけで、次のページで作ります。

@@ -1,0 +1,167 @@
+---
+title: "スタイリングとコンテンツ"
+description: "CSS、StyleX とそのトークン、ダークモード、Markdown と MDX、ビルド時のシンタックスハイライト。どれもオンにしなくても動く。"
+section: "app"
+order: 12
+source: "/guide/styling"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+## CSS
+
+どのモジュールからでもスタイルシートを import できます。
+
+```js
+import "./_design/seam.css";
+```
+
+Vite がバンドルし、ハッシュし、uf がプリレンダリングするので生成 HTML からリンクします。CSS Modules は `.module.css` で動き、Vite がサポートするプリプロセッサもインストールすれば動きます。
+
+**uf にランタイム CSS-in-JS はなく、予定もありません。** ブラウザが JavaScript と別にキャッシュできるスタイルシートはできないものより速く、プリレンダリングされた HTML はハイドレーション前にスタイルを必要とします。uf 自身のスタイリングシステム（下記）はコンパイラで、ビルド時に CSS を書き、バンドルには 1 つの小さい関数だけを残します。
+
+## StyleX とトークン
+
+`app.builtins.style` はデフォルト `"style-x"` なので、プロジェクトの任意のモジュール内の `stylex.create` は `uf transform`（Flow と React Compiler を扱うのと同じパス）でクラス名にコンパイルされ、ルールは CSS として抽出されます。Babel プラグインも PostCSS ステップもありません。
+
+```js
+// @flow
+import * as React from "@uniflowed/react";
+import { props, stylex } from "@uniflowed/stylex";
+import { ufTokens } from "@uniflowed/stylex/tokens.stylex.js";
+
+const styles = stylex.create({
+  card: {
+    backgroundColor: ufTokens.surface,
+    color: ufTokens.ink,
+    borderRadius: ufTokens.radiusMd,
+    padding: ufTokens.space4,
+  },
+});
+
+export component Card(children: React.Node) {
+  return <section {...props(styles.card)}>{children}</section>;
+}
+```
+
+`props` がその import の中で実行時に存在する唯一の関数で、コンパイル済みスタイルを左から右にマージします（CSS プロパティごとに勝者 1 つ）。`create` `defineVars` `createTheme` はコンパイル時の形で、実行時に到達すれば黙って何もしないのではなく、バインディングを名指して throw します。
+
+### トークン
+
+`@uniflowed/stylex/tokens.stylex.js` は `ufTokens` を export します。ビルドが `:root` に宣言する 48 のカスタムプロパティで、**見た目ではなく用途で名付けられています**。`accent` はプライマリアクションが着る色で、プリセットのルールを変えずに緑になれます。
+
+| グループ | 名前 |
+| --- | --- |
+| Surfaces | canvas, sunken, surface, surfaceHover, border |
+| Text | ink, muted |
+| Accent | accent, accentHover, accentInk, accentSoft |
+| Danger | danger, dangerHover, dangerInk, dangerSoft |
+| State | focus, scrim |
+| Type | fontSans, fontMono, textXs … text2Xl, leadingTight, leadingBase, weightRegular/Medium/Bold |
+| Space | space1 … space12 |
+| Shape | radiusSm … radiusXl, radiusPill, sizeControl |
+| Motion / depth | shadowCard, shadowPanel, durationFast, durationBase, easing |
+
+意図的にトークンでないのは「ちょうど 1 つのコントロールが使う幾何」です。スイッチのトラックが 36×20 なのはスイッチがそういうものだからで、トークンに昇格させるとテーマがつまみの収まらない何かに変えることを招きます。
+
+### プリセット
+
+`@uniflowed/stylex/preset` は uf のデフォルトの見た目で、それぞれ `{ className }` だけを返す 12 の関数です。
+
+```js
+import { buttonStyles, cardStyles } from "@uniflowed/stylex/preset";
+
+<div {...cardStyles()}>
+  <button {...buttonStyles({ tone: "primary" })}>Save</button>
+</div>;
+```
+
+`surfaceStyles` `cardStyles` `textStyles` `buttonStyles` `fieldStyles` `backdropStyles` `dialogStyles` `menuStyles` `menuItemStyles` `tabListStyles` `tabStyles` `controlStyles`。バリアントは `tone: "primary" | "neutral" | "ghost" | "danger"` や `size: "sm" | "md" | "lg"`。
+
+素の `className` を返すので、ヘッドレスコンポーネントが StyleX の存在を知らずにスタイルされます。`<Switch {...controlStyles({ shape: "track" })} />` はすべての ARIA 属性とキーボード挙動を保ちます。
+
+### パートが告知する状態
+
+ヘッドレスパートは自分の状態を言います。選択されたタブの `aria-selected="true"`、パネルを見せているトリガーの `aria-expanded="true"`、select のキーボードカーソルが乗る選択肢の `data-active="true"`。条件でまさにそれを選べるので、スタイルはページが同期させる prop ではなくパートに従います。
+
+```js
+const styles = stylex.create({
+  tab: {
+    color: { default: ufTokens.muted, ":is([aria-selected=true])": ufTokens.ink },
+    borderBottomColor: { default: "transparent", ":is([aria-selected=true])": ufTokens.accent },
+  },
+});
+```
+
+形は意図的に狭い: `:is()` か `:not()` の中の属性セレクタ、値は引用符なし（`[data-state=open]`）。
+
+### ダークモード
+
+2 つのテーマが出荷され、どちらも 1 つの spread です。
+
+```js
+import { props } from "@uniflowed/stylex";
+import { ufAutoTheme } from "@uniflowed/stylex/theme";
+
+<body {...props(ufAutoTheme)}>…</body>;
+```
+
+`ufAutoTheme` はすべての上書きを `@media (prefers-color-scheme: dark)` で包むので OS に従い、ライトモードではコストゼロ。`ufDarkTheme` は無条件で、読者がスイッチを切り替える用です。自分のテーマは同じトークン集合に対する `createTheme` です。
+
+```js
+export const brandTheme = stylex.createTheme(ufTokens, {
+  accent: "#0f766e",
+  accentHover: "#115e59",
+});
+```
+
+**コントラストは主張ではなく検査されています。** Rust 側のテストがスタイルシートをコンパイルし、プリセットが実際に組み合わせる 14 の前景/背景ペアに対して WCAG 相対輝度を計算し、ライトデフォルトとダークテーマで 4.5:1、フォーカスリングは 3:1 を検証します。
+
+### なくて、そう言うもの
+
+`keyframes` `firstThatWorks` `positionTry` は未実装で、書くと黙って何もしないのではなくコンパイルエラーです。`@uniflowed/stylex` はグローバルリセットでもコンポーネントライブラリでもありません。uf の見た目を得るのはプリセット + トークン、uf の挙動を得るのは `@uniflowed/ui`、どちらも他方に気づかれず置き換えられます。
+
+## Markdown と MDX
+
+`$page.mdx` はページです。GitHub-flavored Markdown、front matter のパース、見出しへの id 付与。
+
+```mdx
+export const frontmatter = { title: "Release notes" };
+
+
+
+Tables, footnotes and task lists all work.
+```
+
+MDX は散文の中のコンポーネントです。import して使います。パイプラインはデフォルトでオンで、`app.builtins.markdown` で部分的にオフにしたり別のものを指したりできます。
+
+## シンタックスハイライト
+
+フェンスされたコードはビルド中にハイライトされるので、色は HTML に入り、ハイライタはブラウザに出荷されません。ライトとダークの両テーマが CSS 変数として一緒に出ます。
+
+Flow の文法を持つハイライタはないので、JavaScript のものが走り uf が両端で差を埋めます。`component` `hook` `renders` `match` `opaque`、`mixed` / `empty` 型はあとでマークされ、パースできない構文（component / hook 宣言の頭、`{| … |}`）は普通の JavaScript として見せてから HTML を書く前に戻されます。
+
+<Figure title="uf.config.js">
+
+```js
+export default defineConfig({
+  app: {
+    builtins: {
+      markdown: {
+        mdx: {
+          highlight: {
+            themes: { light: "min-light", dark: "vitesse-dark" },
+            langs: ["python", "sql"],
+          },
+        },
+      },
+    },
+  },
+});
+```
+
+</Figure>
+
+## 公開ファイル
+
+`public/` 内のものはルートから配信され、そのままビルドにコピーされます。`public/brand/favicon.svg` は `/brand/favicon.svg` です。

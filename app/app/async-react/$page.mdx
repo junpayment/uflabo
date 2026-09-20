@@ -1,0 +1,256 @@
+---
+title: "非同期 React"
+description: "Suspense、transition、楽観的 UI は 1 つの問いへの 3 つの答え。「他の仕事がまだ終わっていない間、読者に何を見せるべきか」。"
+section: "app"
+order: 6
+source: "/guide/async-react"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+## 地図
+
+実際に持っている「待ち」を名指しする、いちばん小さいプリミティブを使います。
+
+| 待ち | 書くもの | 読者が見るもの |
+| --- | --- | --- |
+| ルートセグメントの準備ができていない | `$loading.js` か局所的な `<Suspense>` | 周りのレイアウト、次にフォールバック、次にコンテンツ |
+| クライアント更新の描画に時間がかかるかもしれない | `useTransition` / `startTransition` | 次の UI が描画される間、古い UI が使える |
+| 変更を即座に感じさせたい | Action の中の `useOptimistic` | 意図した結果を今、次にサーバー確認済みの結果 |
+
+この分割が重要なのは、各プリミティブの失敗の仕方が違うからです。Suspense はサブツリーをフォールバックに置き換えるかもしれない。transition は古い UI を画面に残すかもしれない。楽観的状態は間違っていてロールバックするかもしれない。3 つとも「ローディング」扱いすると、ユーザーが感じる部分を失います。
+
+React 自身のルールが基準です。Suspense 境界は、描画が React の待てるもの（`use(promise)` や `lazy(...)`）を読んだときに活性化します。Effect やイベントハンドラで始まる fetch は、結果をそれらの読み取りの後ろに置かない限り、普通のクライアント状態です。
+
+## ルートの Suspense
+
+`$loading.js` はルートセグメントに Suspense 境界を宣言します。
+
+<Figure title="app/articles/$loading.js">
+
+```js
+// @flow
+export default component LoadingArticles() {
+  return <p aria-busy="true">Loading articles...</p>;
+}
+```
+
+</Figure>
+
+境界はそのセグメント自身のレイアウトの内側、その下すべての外側に座ります。だからルートツリーはストリーミングツリーでもあります。
+
+```
+app/$layout.js                  常にシェル内
+app/articles/$loading.js        フォールバックがシェル内
+app/articles/[slug]/$layout.js  準備できたらページと共にストリーム
+app/articles/[slug]/$page.js    準備できたらページと共にストリーム
+```
+
+ルートレイアウトがなくてもルートの `$loading.js` は動きます。`<Suspense>` は自分の要素を描画せず、React は描画ルート直下の境界を flush できないので間違いやすい端ですが、uf はレイアウトなしのルートケースに最小のホストフレームを足します。
+
+同じルートでも、ページの一部だけが待つなら局所的な境界を使えます。
+
+```js
+// @flow
+import { Suspense, use } from "@uniflowed/react";
+
+export async function loader({ params }: LoaderArgs) {
+  return {
+    article: await readArticle(params.slug),
+    comments: readComments(params.slug),
+  };
+}
+
+export default component Article(data: {|
+  +article: ArticleRecord,
+  +comments: Promise<Array<CommentRecord>>,
+|}) {
+  return (
+    <article>
+      <h1>{data.article.title}</h1>
+      <Suspense fallback={<p aria-busy="true">Loading comments...</p>}>
+        <Comments comments={data.comments} />
+      </Suspense>
+    </article>
+  );
+}
+
+component Comments(comments: Promise<Array<CommentRecord>>) {
+  return (
+    <ul>
+      {use(comments).map((comment) => <li key={comment.id}>{comment.body}</li>)}
+    </ul>
+  );
+}
+```
+
+`defer()` は不要です。loader データに残された promise が契約です。
+
+## Suspense ではないもの
+
+Suspense はリクエスト API ではありません。これはサスペンドしません。
+
+```js
+"use client";
+// @flow
+import { useEffect, useState } from "@uniflowed/react";
+
+component SearchResults(query: string) {
+  const [rows, setRows] = useState<Array<Result>>([]);
+  useEffect(() => {
+    let alive = true;
+    fetch(`/search?q=${encodeURIComponent(query)}`)
+      .then((response) => response.json())
+      .then((next) => { if (alive) setRows(next); });
+    return () => { alive = false; };
+  }, [query]);
+  return <Results rows={rows} />;
+}
+```
+
+このコンポーネントを囲む `<Suspense>` には捕まえるものがありません。fetch が答える前にコンポーネントが描画されるからです。ナビゲーションに属するデータにはルートの loader、意図的に suspense 駆動にするデータにはキャッシュした promise と `use`、ローディングが状態モデルの一部なら明示的な `Loadable` 値を使います。`@uniflowed/state` が `asyncAtom` で最後の形を選ぶのはこのためです。
+
+**安全のために見えない境界を足さないでください。** Suspense のフォールバックは UI で、その位置が何が消えるかを決めます。セグメント全体が待つなら `$loading.js`、1 パネルが待つならそのパネルを包む、すでに見えているコンテンツを次の値の準備中も見せたいなら transition。
+
+## Transition
+
+transition は「この更新は中断でき、すでに見せたコンテンツは次の描画がサスペンドしてもフォールバックで隠されるべきではない」と言います。
+
+```js
+"use client";
+// @flow
+import { Suspense, use, useState, useTransition } from "@uniflowed/react";
+
+component ProjectTabs(projects: {| +alpha: Promise<Project>, +bravo: Promise<Project> |}) {
+  const [selected, setSelected] = useState("alpha");
+  const [isPending, startTransition] = useTransition();
+
+  return (
+    <section aria-busy={isPending}>
+      <button type="button" onClick={() => startTransition(() => setSelected("alpha"))}>Alpha</button>
+      <button type="button" onClick={() => startTransition(() => setSelected("bravo"))}>Bravo</button>
+      <Suspense fallback={<p>Loading project...</p>}>
+        <ProjectPanel project={selected === "alpha" ? projects.alpha : projects.bravo} />
+      </Suspense>
+    </section>
+  );
+}
+```
+
+`useTransition` はコンポーネント形で `isPending` を得ます。単独の `startTransition` はコンポーネントでないコードや、すでに setter を持つヘルパー用です。
+
+transition を誠実に保つ 2 つの習慣:
+
+- **テキスト入力の制御を transition に入れない。** ユーザーが打った文字は緊急です。
+- **async の Action が await してから状態を設定するなら、await 後の更新をもう 1 つの `startTransition` で包む。** React は現在 Action 内の同期的な更新をマークしますが、await 後の set は再度マークが必要です。
+
+uf のクライアントルーターも同じ考えをナビゲーションに使います。`Link` や `useRouter().push()` は次のルートを解決し、それから transition の中でコミットします。`useRoute().pending` がグローバルなプログレスバーのためのルーターの pending ビットです。
+
+これはブラウザの View Transition API とは違います。React の transition はスケジューリングとフォールバックについて、View Transition は 2 つの描画済みフレームのアニメーションについてです。uf は 1 回の遷移で両方を使えますが、答えている問いが違います。
+
+## 楽観的 UI
+
+楽観的状態は Action のための一時的な状態です。サーバーが確認する前に、ユーザーが求めた結果をインターフェースに見せます。
+
+<Figure title="app/articles/_components/FavoriteButton.js">
+
+```js
+"use client";
+// @flow
+import { startTransition, useOptimistic, useState } from "@uniflowed/react";
+import { setFavorite } from "../_actions/favorite.js";
+
+export default component FavoriteButton(id: string, initialFavorite: boolean) {
+  const [saved, setSaved] = useState<boolean>(initialFavorite);
+  const [favorite, setOptimisticFavorite] = useOptimistic<boolean>(saved);
+
+  function toggle() {
+    const next = !favorite;
+    startTransition(async () => {
+      setOptimisticFavorite(next);
+      const result = await setFavorite(id, next);
+      startTransition(() => { setSaved(result.favorite); });
+    });
+  }
+
+  return (
+    <button aria-pressed={favorite} type="button" onClick={toggle}>
+      {favorite ? "Saved" : "Save"}
+    </button>
+  );
+}
+```
+
+</Figure>
+
+`setOptimisticFavorite(next)` 後の最初の描画は `next` を見せます。Action が終わると永続値 `saved` が追いつき、楽観的値はそれに収束します。Action が throw して `saved` が変わらなければ、UI は最後に確認された値に戻ります。
+
+複数の楽観的更新が同時に pending になり得るときは reducer を使います。
+
+```js
+const [shown, addOptimistic] = useOptimistic<$ReadOnlyArray<Message>, Message>(
+  messages,
+  (current, message) => [...current, { ...message, sending: true }],
+);
+```
+
+reducer は純粋で、React は Action が pending の間、最新の本物の値の上に再生します。別の refresh やサーバーアクションがこの Action の完了前に本物のリストを更新したときに必要な部分です。
+
+## フォームと Action
+
+React は `<form action={fn}>` の action をすでに transition として扱うので、楽観的 setter は最初の呼び出しを `startTransition` で包まずに action 本体で走らせられます。
+
+```js
+"use client";
+// @flow
+import { useOptimistic } from "@uniflowed/react";
+import { useFormStatus } from "react-dom";
+import { useRouter } from "@uniflowed/router";
+import { postMessage } from "../_actions/messages.js";
+
+component SendButton() {
+  const { pending } = useFormStatus();
+  return <button disabled={pending} type="submit">Send</button>;
+}
+
+export default component Composer(messages: $ReadOnlyArray<Message>) {
+  const router = useRouter();
+  const [shown, addOptimistic] = useOptimistic(messages, (current, body: string) => [
+    ...current,
+    { id: "pending", body, sending: true },
+  ]);
+
+  async function submit(form: FormData) {
+    const body = String(form.get("body") ?? "");
+    addOptimistic(body);
+    await postMessage(body);
+    await router.refresh();
+  }
+
+  return (
+    <>
+      <MessageList messages={shown} />
+      <form action={submit}>
+        <input name="body" />
+        <SendButton />
+      </form>
+    </>
+  );
+}
+```
+
+`useFormStatus` は submit が pending だと言い、`useOptimistic` はその間の結果がどう見えるべきかを言います。バリデーションエラーは依然 action の返す状態に属します。楽観は可逆なフィードバックのためで、サーバーの判定を置き換えるためではありません。
+
+## 境界を選ぶ
+
+迷ったら、何を保ちたいかで選びます。
+
+| 保つもの | 道具 |
+| --- | --- |
+| ルートが待つ間のドキュメントのシェル | `$loading.js` |
+| ナビゲーションが次を準備する間の解決済みページ | transition |
+| ユーザーが打ったテキスト | 普通の緊急な状態 |
+| 変更が飛んでいる間のユーザーの意図 | `useOptimistic` |
+| ルーティング外のキャッシュ可能な非同期状態機械 | `@uniflowed/state` の `Loadable` |
+
+Suspense は「このサブツリーは準備できていない」。transition は「新しいサブツリーを準備する間、古いサブツリーを有用に保つ」。楽観的状態は「Action が落ち着くまで意図した結果を見せる」。

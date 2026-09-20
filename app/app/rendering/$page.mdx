@@ -1,0 +1,167 @@
+---
+title: "レンダリングモード"
+description: "ドキュメントはどこから来るのか、リンクをクリックしたら何が起きるのか。2 つの問いに 2 つの設定で答える。"
+section: "app"
+order: 4
+source: "/guide/rendering"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+## 2 つの軸
+
+**`app.rendering.modes`** はドキュメントがどこから来るかを言い、`uf build` は許された戦略の中からルートごとに選びます。パラメータのないルートはプリレンダリング、パラメータ付きは `generateStaticParams` を export していればプリレンダリング、残りはリクエストごとに描画。
+
+例外は `"csr"` で、これはルートごとの答えではなくシングルページアプリケーション全体の宣言です。
+
+**`app.rendering.navigation`** は次に何が起きるかを言い、アプリ全体で 1 つの答えです。
+
+| | `"client"`（デフォルト） | `"document"` |
+| --- | --- | --- |
+| リンク | ルーターが開いているページの中で次のルートを解決 | ブラウザが次のドキュメントを取得 |
+| `["ssg"]` | クライアントルーターが引き継ぐプリレンダリング済みサイト | ドキュメントの静的サイト |
+| `["ssr"]` | クライアントルーターが引き継ぐサーバー描画アプリ | 古い意味でのサーバー描画アプリ |
+
+すべてのセルが誰かの望むデプロイなので、これは最初のキーの 5 番目の値ではなく第 2 のキーです。
+
+## ルートの決定
+
+ルートテーブルの全ルートに `uf build` は同じ問いを立てます: **この URL は今ファイルとして書けるか、それとも後でリクエストが必要か？**
+
+| ルートの形 | デフォルトビルド | `["ssg"]` / staticBuild | `["ssr"]` | `["csr"]` |
+| --- | --- | --- | --- | --- |
+| パラメータなし | プリレンダリング | プリレンダリング | リクエストごと | シェル内のブラウザルート |
+| パラメータあり、`generateStaticParams` あり | 返された集合ごとにプリレンダリング | 同左 | リクエストごと（関数は呼ばれない） | シェル内 |
+| パラメータあり、なし | "answered by a server" に列挙 | **ビルドエラー**（ルート名指し） | リクエストごと | シェル内 |
+| `dynamic = "force-dynamic"` | 列挙 | ビルドエラー | リクエストごと | シェル内 |
+| `$route.js` | 列挙 | ビルドエラー | リクエストハンドラ | ビルドエラー |
+| `$middleware.js` | ガードするパスで列挙 | ビルドエラー | リクエストごと | ビルドエラー |
+| ブラウザから呼べるサーバーアクション | サーバービルド内のエンドポイント | アダプタか compile がなければエラー | エンドポイント | ビルドエラー |
+
+`generateStaticParams` は列挙であり、証明ではありません。3 つの slug を返せばその 3 URL がファイルになります。静的ホストは 4 つ目に 404 を返し、サーバーデプロイはリクエストが来れば描画できます。
+
+`dynamic = "force-dynamic"` は逆のケースのためにあります。パラメータがないのにリクエストに依存するルート。`/account` のダッシュボード、Cookie を読むページ。
+
+**`force-dynamic` が必要なのに言わないページは、プリレンダリングされるのではなく拒否されます。** プリレンダリング対象のルートの描画が `cookies()` `headers()` `draftMode()` に達すると、`uf build` はルート・関数・そこへ至る import チェーンを名指しして失敗します。
+
+## isr: 再生成されるページ
+
+プリレンダリング済みページは、自分の描画の中からドキュメントがいつまで真かを言えます。
+
+```js
+// @flow
+import { cacheLife, cacheTag } from "@uniflowed/server/cache";
+
+export default async function Prices() {
+  cacheLife({ revalidate: 300 });
+  cacheTag("prices");
+  return <PriceTable prices={await loadPrices()} />;
+}
+```
+
+`app.rendering.modes` が `isr` を許し（デフォルトのリストは許す）、`rendering.cache.route` が on で、ビルドがサーバーを残すとき、`uf build` はそのページを再生成用に書きます。
+
+- 最初のリクエストはビルドが書いたドキュメントで、描画なしに答える
+- 寿命が過ぎたら、次のリクエストはまだそのドキュメントを受け取り、サーバーはバックグラウンドで再生成する
+- 再生成が成功したら、新しいドキュメントが一段階で古いものを置き換える。**リビルドはない**
+- `revalidateTag("prices")` / `revalidatePath("/prices")` がページを expire する。次のリクエストが描画し、ビルドのコピーには二度と戻らない
+
+ドキュメントは自分の URL ではなく `dist/__uf/regenerate/` に書かれるので、静的ファイルサーバーがサーバーより先に答えてしまうことはありません。寿命を言わないページ、`noStore` を呼ぶページ、200 以外を返すページは、以前と同じ素のプリレンダリング済みドキュメントのままです。
+
+| ビルドが動く場所 | 再生成ページを保つもの |
+| --- | --- |
+| uf start / preview | `.uf/cache/route` のファイルシステムストア |
+| --adapter node / bun / deno / container | 同上、サーバーのワーキングディレクトリ |
+| --adapter edge | Workers KV（`UF_CACHE` にバインド） |
+| --adapter serverless | `rendering.cache.store` で名指ししたプロバイダ。なければ拒否 |
+| --adapter static / staticBuild | なし。再生成ページは名指しで拒否 |
+| --compile | なし。コンパイル済みバイナリはルートキャッシュを持たず、毎リクエスト描画 |
+
+## ビルドを読む
+
+サマリが計画を言葉で言います。
+
+```
+  rendering    prerender what can be prerendered; the rest is answered by a server
+  answered by a server
+    /posts/:slug — it has parameters and its page exports no `generateStaticParams`
+    /search — its page exports `dynamic = "force-dynamic"`
+    /api/health — it is a route handler, and a handler answers a request rather than producing a file
+```
+
+同じ事実は `.uf/build/meta/uf-build-manifest.json` にも書かれます。`uf explain build` はビルドを走らせる前に同じ選択を印字します。
+
+## デプロイの形を選ぶ
+
+| 目標 | 設定 | 検証すること |
+| --- | --- | --- |
+| ファイルだけのドキュメント / ブログ / マーケサイト | `build.staticBuild: true` か `modes: ["ssg"]` | パラメータ付きページ全部に `generateStaticParams`。ハンドラ、ミドルウェア、呼べるアクション、`app.router` ルールがない |
+| リンクが普通の Web ページのように振る舞う静的サイト | `modes: ["ssg"]`, `navigation: "document"` | 同上。加えてクライアント状態が遷移を生き残ることを期待しない |
+| できるところはキャッシュ済みドキュメントのサーバーアプリ | デフォルト `["ppr", "ssr", "ssg", "isr"]` | "answered by a server" リストがサーバーアダプタでデプロイされる |
+| 決してプリレンダリングしないサーバーアプリ | `modes: ["ssr"]` | `generateStaticParams` はビルド中に走らない |
+| SPA リライトの後ろのシングルページアプリ | `modes: ["csr"]` | ハンドラ、ミドルウェア、呼べるアクション、`app.router` ルール、到達可能なサーバー専用モジュールがない |
+
+## ページはどう遷移するか
+
+React Server Components が描画したドキュメントは、ツリーの元になった Flight ペイロードを運び、ブラウザはルートのモジュールを再描画するのではなくそのペイロードをハイドレートします。その後のリンクは次のルートのペイロードを `<route>/__uf.flight` から取得し、その場で描画します。
+
+- プリレンダリング済みルートはペイロードがドキュメントの横にあるので、静的ホストはリライトなしでファイルから遷移を配信する（`text/x-component`）
+- サーバー描画ルートはリクエストごとにペイロードを答える
+- ペイロードでないものはドキュメント読み込み（サイト外リダイレクト、静的ホストの 404.html、ミドルウェアの拒否）
+
+`app.rsc: false` でこれをオフにすると、遷移は次のルートのモジュールを import します。このモードは React 19.2.3 以降で `react-server-dom-parcel` なしに動き、ペイロードには React 19.3 が必要です。
+
+## navigation: "document"
+
+<Figure title="uf.config.js">
+
+```js
+export default defineConfig({
+  app: {
+    rendering: { modes: ["ssg"], navigation: "document" },
+  },
+  build: { staticBuild: true },
+});
+```
+
+</Figure>
+
+**変わること:** `Link` は普通のアンカー。`useRouter().push` は `location.assign`。`popstate` リスナーは入らない。
+
+**変わらないこと:** ページはハイドレートする。`"use client"` コンポーネントはそのまま動く。**これは「JavaScript のないブラウザ」ではなく「引き継ぎのないクライアントルーター」**です。全ルートは `modes` の通りにプリレンダリングされる。`uf dev` はデプロイと同じ振る舞いをする。
+
+### 買えないもの
+
+- **バンドルは空にならない。** uf はアイランド単位ではなくドキュメント全体をハイドレートするので、どこかに `"use client"` 境界があるルートは React とそのルートのコンポーネントを読み込みます。取り除かれるのは遷移（履歴リスナー、prefetch、ブラウザでのルート解決）だけ。
+- **別のランタイムではない。** モードはエントリがルーターに渡す定数です。
+- **それ自体で速くはならない。** ドキュメントリクエストはオリジンか CDN への往復です。買えるのは「uf が関与せずに Web の通りに振る舞うページ」: ブラウザのスクロール復元、履歴、中クリック、そして間違い得るものが 1 つ減ること。
+
+## csr: シングルページアプリケーション
+
+<Figure title="uf.config.js">
+
+```js
+export default defineConfig({
+  app: { rendering: { modes: ["csr"] } },
+});
+```
+
+</Figure>
+
+`uf build` は 1 つのドキュメント（空のルート、スタイルシート、モジュールスクリプト）を書き、クライアントルーターがそこからすべてのルートを解決・描画します。ルートはプリレンダリングされず、サーバーも描画せず、サーバーバンドルはビルドを生き残りません。
+
+`"csr"` はリストを共有できません。`["csr", "ssg"]` は設定読み込み時に拒否されます。デフォルトリストにも入っていません。「何も禁じなかったから SPA になった」ビルドは、デフォルトがしたことのある最大の意味論的変更になるからです。
+
+シェルは 2 度書かれます: `index.html`（`/` 用）と `404.html`（ホストがファイルを持たない全パス用）。GitHub Pages、Netlify、error document 付きの S3 バケットはこれでカバーされ、404 ステータスは「このアプリが持たない URL」に対して正しいステータスです。
+
+サーバーを必要とするルートは、バンドル前に名指しで拒否されます: `$route.js`、`$middleware.js`、呼べるサーバーアクション、そしてサーバー専用パッケージ（`@uniflowed/server`、`@uniflowed/db`、`server-only`）を import するか `*.server.js` という名前のモジュール。デッドコードは数えません。
+
+**コスト:** ドキュメントは何も言いません。`<title>` も description もコンテンツもなし。JavaScript を走らせないクローラは全 URL で空ページを見ます。loader はブラウザで走るので、全ルートのデータはバンドル読み込み後に取得されます。往復の後の往復です。一部のルートだけこれが許容できないなら、答えはこのモードではなく `["ssg"]` かデフォルトです。
+
+## ドキュメント遷移を選ぶとき
+
+- サイトがドキュメント（マニュアル、ブログ、マーケサイト）で、クライアントルーターが「誰も頼んでいないアニメーション」を買っている
+- 下流に URL ごとの完全なドキュメントが必要（URL でキーするキャッシュ層、load で走る分析タグ）
+- ドキュメントをリライトする何かの後ろで配信している
+
+選ばないとき: 遷移を生き残らなければならない状態を持つアプリ。再生し続けるメディアプレイヤー、途中まで埋めたフォーム。それがクライアントルーターがデフォルトである理由です。

@@ -1,0 +1,136 @@
+---
+title: "コマンド一覧"
+description: "サブコマンド、主なフラグ、終了コード。グローバルフラグはサブコマンドの前、サブコマンド自身のフラグは後に置く。"
+section: "reference"
+order: 1
+source: "/reference/cli"
+---
+
+## グローバルフラグ
+
+| フラグ | 意味 |
+| --- | --- |
+| `--cwd DIR` | ワーキングディレクトリの代わりに DIR をプロジェクトルートとして扱う |
+| `--color auto\|always\|never` | 出力の色。`auto` はターミナルだけ色付けする |
+| `-h, --help` | uf またはサブコマンドのヘルプ |
+| `-V, --version` | バージョン |
+
+## プロジェクトを作る
+
+### `uf new PATH [TEMPLATE]`
+
+新しいディレクトリにアプリをスキャフォールドします。`uf.config.js`、`app.js`、レイアウト、ページ、`package.json`。**ファイルを書くだけ**で、インストールも git もしません。
+
+`react` がデフォルトテンプレート、`monorepo` がもう 1 つ。テンプレートの位置にテンプレートでない語があると、ディレクトリとして読まれるのではなく拒否されます（`uf new my-site raect` はそう言います。`raect/` にスキャフォールドする方が悪い答えだから）。
+
+`uf new PATH monorepo` は 2 つのワークスペースパッケージのリポジトリを作ります。`apps/web`（react テンプレートの形のアプリ）と `packages/ui`（`--lib` の形のライブラリ）で、アプリは名前でライブラリに依存します。ルートには複数パッケージのリポジトリが必要で単一パッケージには不要なものが入ります。`workspaces` フィールドを持つ `package.json`、ルートの `uf fmt` / `uf lint` / `uf check` / `uf test` が全パッケージについて読む `uf.config.js`、`#member` セレクタで 1 パッケージに届く tasks。
+
+**別の場所からのテンプレート**は、正確なバイトに固定されていなければなりません。
+
+| ソース | 固定するもの |
+| --- | --- |
+| `github:owner/repo#<commit>` | コミット id、完全形で |
+| `git+https://host/repo.git#<commit>` | コミット id、完全形で |
+| `https://host/template.tar.gz --integrity sha512-<base64>` | ダイジェスト（`sha256:<hex>` も可） |
+
+ブランチ、タグ、短縮コミット id は拒否されます。それぞれ「あなたが読んだ後で別のコードを意味するようになれる名前」だから。`--integrity` のない tarball は信用される代わりに拒否されます。tarball は展開前にハッシュされ、一致しないものは決して展開されません。
+
+**テンプレートはコピーされ、中の何も走りません。** インストールもライフサイクルスクリプトもジェネレータもなし。git はあなた自身とシステムの設定を無視し hook をオフにして走ります。テンプレート内のシンボリックリンクは拒否されます。テンプレート全体が届いて検査を通るまで何も書かれないので、拒否されたテンプレートはプロジェクトの半分を残しません。
+
+### `uf init [TEMPLATE]`
+
+同じスキャフォールドを現在のディレクトリへ。それが 2 つのコマンドの違いのすべてで、2 つある理由でもあります。`uf create app` は 1 つの省略可能引数が「名指せばテンプレート、名指さなければディレクトリ」だったので、できる 2 つのことに別の綴りがありませんでした。
+
+### `uf new NAME --lib`
+
+アプリではなくライブラリをスキャフォールドします。ルーターなし、ドキュメントなし、公開向けの `package.json`。`uf.config.js` は `app: { router: { enabled: false } }` と言い、その 1 行が `uf build` にアプリのエントリを探す代わりにライブラリをビルドさせます。
+
+## 調べる
+
+| コマンド | 何をするか |
+| --- | --- |
+| `uf info` | バージョン、解決された JavaScript ホスト、見つかったプロジェクト。何かがおかしいとき最初に走らせるもの。`uf info PACKAGE [FIELD]` はレジストリが言うことを印字 |
+| `uf inspect` | 設定から uf が解決したもの（実効オプション、ルートテーブル、Vite に渡した設定）。`--json` あり |
+| `uf explain COMMAND` | コマンドが何をし、各部分をどのプロバイダが行うか。`dev` `build` `preview` `start` `doc` `test` `fmt` `lint` `check` に対して。`--json` あり |
+| `uf routes list` | ルートテーブル |
+| `uf routes add /path --loader` | ルートファイルを書く |
+| `uf doc` | ドキュメント |
+
+```
+uf dev
+
+  1. configuration
+      provider  uf
+      what      uf.config.js, with `vite` merged over what uf generates
+  2. JavaScript host
+      provider  node
+  3. dev server
+      provider  vite (@uniflowed/vite driver)
+  4. Flow to JavaScript
+      provider  uf
+```
+
+`uf explain dev --target native` は、そのアプリターゲットについての `uf dev` を説明します（プロジェクト自身の React Native dev サーバーとそのバージョン、Metro 設定ファイル、デバイスが接続するもの）。ターゲットで変わるプロバイダは `uf dev` のものだけなので、他のコマンドでは拒否されます。
+
+## 開発とビルド
+
+| コマンド | 何をするか |
+| --- | --- |
+| `uf dev` | Vite の dev サーバー。`--host` は `dev.allowedHosts` が空でないときだけ。`--target native` でネイティブ |
+| `uf build` | クライアントとサーバーのバンドル、プリレンダリング。`--size-report` `--analyze` `--adapter TARGET` `--compile` `--target` |
+| `uf preview` | Vite の preview サーバー越しに本番ビルドを配信 |
+| `uf start` | バンドラをプロセスに持たず、uf 自身のサーバーで本番ビルドを配信 |
+| `uf prepare` | pre-commit コマンド。ステージされたファイル、生成される型、`staged` が名指すもの、それから `uf lint` と `uf fmt --check`。`--install-hooks` で git に配線 |
+| `uf clean` | `.uf/` を消す |
+
+## チェック
+
+| コマンド | 何をするか |
+| --- | --- |
+| `uf fmt` | Flow / JS / JSON / CSS / TypeScript を整形。`--check` で書かずに検査 |
+| `uf lint` | uf のルール、Flow の lint、React Compiler の診断。`--json` `--rules` `--fix` `--fix-unsafe` |
+| `uf check` | `uf lint` の後に Flow の推論。`--json` `--explain-any <package>` `--fix` |
+| `uf test` | テスト。`--list` `--watch` `--changed REF` `-t` `-j` `-u` `--coverage` `--browser` `--json` `--reporter junit` `--shard` `--merge-shards` |
+
+`uf fmt` `uf lint` `uf check` `uf test` はすべてパス引数を取ります。パスにその文字列を含むものだけが読まれ、**何にもマッチしないパターンはクリーンな実行ではなくエラー**です。
+
+## 依存
+
+`uf install` `uf add` `uf remove` `uf update` `uf why` `uf ls` `uf audit` `uf search` `uf info` `uf dedupe` `uf link` `uf unlink` `uf patch` `uf catalog` `uf pm approve-builds`。
+
+すべてプロジェクトのパッケージマネージャを検出して実行します。詳細は [依存管理](/toolchain/dependencies)。
+
+## 環境とタスク
+
+| コマンド | 何をするか |
+| --- | --- |
+| `uf env install` / `list` / `update` / `exec` / `gc` / `use` / `doctor` | ランタイムとパッケージマネージャのストア、モードの選択 |
+| `uf use bun` | プロジェクトを JavaScript ホストに固定（`uf.config.js` に書く） |
+| `uf run TASK`（`ufr`） | タスクと依存を実行。`-r` `--filter` `-j` `--why` `--force` `--mode` |
+| `uf exec BIN`（`ufx`） | プロジェクトがインストールしたバイナリを実行。`--yes` で取得を許可 |
+
+## UI とその他
+
+| コマンド | 何をするか |
+| --- | --- |
+| `uf ui add <name>…` | スタイル付きコンポーネントをリポジトリに書く。`--overwrite` |
+| `uf ui diff` | あなたの編集とレジストリの変更の差 |
+| `uf ui list` | レジストリのコンポーネント一覧 |
+| `uf lsp` | 言語サーバー（[エディタ](/start/editors)） |
+| `uf mcp` | MCP stdio サーバー（[エージェント](/toolchain/agents)） |
+| `uf i18n extract` / `merge` | メッセージの抽出と翻訳の取り込み |
+| `uf release` | リリースのビルド |
+| `uf publish` | `.uf/publish.json` に計画を書く。**何も公開しない** |
+| `uf self-update` / `self-uninstall` | uf バイナリ自身の更新と削除 |
+
+## 終了コード
+
+| コード | 意味 |
+| --- | --- |
+| `0` | 成功。`fmt --check` では変更が要らない |
+| `1` | コマンドが走って問題を報告した（失敗したテスト、lint エラー、型エラー、整形が必要なファイル） |
+| `2` | uf がコマンドをまったく走らせられなかった（パースできない引数） |
+
+`uf exec` と `uf env exec` は例外で、意図的にそうです。どちらも別のプログラムに制御を渡し、そのプログラムが終了したコードで終了します。`ufx tsc` の `2` は tsc の `2` であり uf のものではありません。uf の `1` で包むと、子が生み得るすべてのコードが互いに区別できなくなります。スクリプトが 1 つを読む理由そのものです。
+
+`uf.config.js` がないのはこれらのどれでもありません。設定なしのプロジェクトはデフォルトを得て、すべての読み取り専用コマンドが動きます。**本来 `2` であるべきなのに今日 `1` の 2 ケース**が、丸められずに書き留められています。パースできない `uf.config.js` と、`@uniflowed/vite` か `@uniflowed/host` の欠落です。すべてのコマンドが同じエラー型を返すので、「走らせられなかった」と「走って問題を見つけた」の区別にはコマンド層がまだしない区別が必要です。

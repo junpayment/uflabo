@@ -1,0 +1,143 @@
+---
+title: "Effect（@uniflowed/effect）"
+description: "失敗を型に入れる。Effect<A, E, R> は何を生み、どう失敗し、何を必要とするかを言う。Effect-TS のモデルから、Flow が持たない高階型に由来する部分を除いたもの。"
+section: "app"
+order: 10
+source: "/guide/effect"
+---
+
+## 3 つのチャネル
+
+`Effect<A, E, R>` はまだ走っていない仕事の記述です。`A` は生むもの、`E` は名指しする失敗、`R` は必要とするサービス。走らせるまで不活性です。
+
+```js
+import { runPromise, runSync, succeed } from "@uniflowed/effect";
+
+runSync(succeed(3)); // 3
+```
+
+`runSync` は値を返すか raise、`runPromise` は非同期形、`runSyncExit` / `runPromiseExit` は raise せず `Exit` を返し、`runFork` は 1 つを始めて fiber を返します。
+
+失敗は 1 つではなく 3 つで、区別はすべてのコンビネータを貫きます。
+
+| | 何か | 何が作用するか |
+| --- | --- | --- |
+| `fail(e)` | シグネチャが約束した型付きの失敗 | `catchAll` `catchTag` `either` `orElse` `retry` |
+| `die(x)` | プログラムのバグ | 設計上何も回復しない。`Exit` に届く |
+| 割り込み | 誰かがすでに下した決定 | どちらでもない。失敗ではない |
+
+だから `sync` / `promise` / `call` 内の throw は型付きの失敗ではなく defect になります。`trySync` と `tryPromise` は明示的なエラーマッパーで失敗を名指しします。
+
+```js
+const fetched = tryPromise({
+  try: () => fetch(url).then((response) => response.json()),
+  catch: (cause) => ({ kind: "network", cause }),
+});
+```
+
+意図的です。あらゆる throw を型付きエラーに変える `catch (e)` は、null ポインタのバグが 3 回リトライされ「ネットワークが混んでいます」とユーザーに報告される道です。
+
+## 合成
+
+2 つの方法があり、ジェネレータが手を伸ばすべき方です。
+
+```js
+import { effect, succeed } from "@uniflowed/effect";
+
+const program = effect(function* () {
+  const first = yield* succeed(2);
+  const second = yield* succeed(3);
+  return first * second;
+});
+```
+
+`yield*` が型付きの形です。`first` はそこで `number` になり、素の `yield` は `mixed` を返します。yield されたすべての失敗チャネルはプログラムのものに union されます。
+
+またはコンビネータ、すべて data-first の 2 引数: `map(self, f)` `flatMap(self, next)` `tap` `zip` `as` `mapError` `delay`。**`pipe` も `self.pipe(...)` もありません。** 1 つの pipe がジェネリックになれる高階型のエンコーディングがないからです。
+
+## 回復
+
+```js
+catchAll(parse(input), (problem) => succeed(fallbackFor(problem.field)));
+catchTag(request, "timeout", () => succeed(cached));
+either(request);   // { ok: true, value } | { ok: false, error }
+exit(request);     // Exit。defect と割り込みも含む
+orDie(request);    // 型付きの失敗が defect になる
+timeout(request, 2000); // エラーチャネルに TimeoutError を足す
+```
+
+`catchTag` は `kind` を先に、次に `tag` を読むので、uf 自身の判別子とも Effect-TS から移植したエラーとも動きます。**narrowing はしません。** recover は依然 `E` 全体を見ます。Flow は実行時に比較された文字列で型変数を絞れないからです。Effect-TS に対する本物の損失で、パッケージは「絞るように見える型」を出荷する代わりにそう言います。
+
+## 並行性
+
+```js
+all(effects, { concurrency: 4 });
+forEach(items, (item) => work(item), { concurrency: "unbounded" });
+race([fromCache, fromNetwork]);
+```
+
+`all` は完了順で最初の失敗で fail-fast し、兄弟を割り込んで待ちます（コンビネータとリークの差）。`race` は「最初に settle したもの」ではなく「最初の成功」を待ちます。失敗した参加者は競争を終わらせずに脱落します。
+
+```js
+const fiber = await runPromise(fork(work));
+await runPromise(join(fiber));
+await runPromise(interrupt(fiber)); // Exit
+```
+
+`fork` は detached です。Effect-TS の `forkDaemon` であって `fork` ではありません。親のキャンセルは子をキャンセルしません。親と共に死ぬべき仕事は `all` `race` `timeout` が子 fiber を開くものです。割り込みは協調的で、ステップ間でチェックポイントされます。
+
+## リソース
+
+```js
+const handle = acquireRelease(
+  sync(() => open(path)),
+  (file) => sync(() => file.close()),
+);
+
+runPromise(scoped(flatMap(handle, read)));
+```
+
+`acquireRelease` はスコープを必要とし、`scoped` がそれを提供します。なければ effect は「包め」と言うメッセージで die します。スキップされた release は本番でだけ現れるリークなので、黙って許容するものではありません。
+
+## リトライ
+
+`Schedule<In>` は素のデータで、リテラルとして書く状態機械です。
+
+```js
+retry(request, { kind: "exponential", baseMillis: 100, factorPercent: 200 });
+retry(request, { kind: "intersect", left: { kind: "recurs", times: 5 }, right: { kind: "upTo", millis: 10_000 } });
+```
+
+`factorPercent` が float でなく整数パーセントなのは、`1.5` を `150` と書けば JSON 設定ファイルを往復しても `1.4999999999999998` にならないからです。`retry` はリトライを数えるので `{ kind: "recurs", times: 2 }` は 3 回走ります。型付きの失敗だけリトライし、defect はリトライしません。バグをもう一度走らせるのは戦略ではないからです。
+
+## サービス
+
+```js
+const Clock = tag<{ readonly now: () => number }>("Clock");
+const program = flatMap(Clock, (clock) => succeed(clock.now()));
+
+runPromise(provideService(program, Clock, { now: () => Date.now() }));
+runPromise(provide(program, layerSucceed(Clock, { now: () => 42 })));
+```
+
+`Tag` はそれ自体 Effect なので、ジェネレータ内で `yield* Clock` が動きます。
+
+**これは experimental とマークされた部分**で、理由は具体的です。Flow に型レベルの集合差がないので、要件の減算は `(Effect<A, E, R | Out>, Layer<Out, …>) => Effect<A, E, R>` と型付けされ、チェッカーは union から `R` を解きます。提供されたサービスが union の別個のメンバーなら動き、そうでなければ黙って `R` に残します。実行時に欠けているサービスは defect であり、型が不可能にしているはずのものです。
+
+## Effect-TS から来る人へ
+
+| Effect-TS | ここ | 理由 |
+| --- | --- | --- |
+| `self.pipe(map(f))` | `map(self, f)` | 高階型がないので、ジェネリックな pipe も typeclass も Do もない |
+| 要件の減算 | union から解く | Flow に型レベルの集合差がない |
+| `catchTag` が `_tag` で絞る | `kind` 次に `tag` を読み、絞らない | 実行時文字列で型変数を絞れない |
+| 4 つの fork | `fork` `forkDaemon` `forkScoped` | `forkIn` は値としての Scope が必要で、ここでは phantom |
+| `Schedule<Out, In, R>` | `Schedule<In>`、出力は常に number | union の腕は言及しない型パラメータを制約できない |
+| `race` は最初に settle したもの | `race` は最初の成功 | 最速の答えがエラーのとき「最初に settle」は呼び出し側が欲しいものではない |
+| タプル型を保つ異種 `all` | 配列型 1 つ in、1 つ out | variadic tuple inference がない |
+
+**未実装:** STM、Channel / Sink / GroupBy / Chunk、独自の fiber スケジューラ（ホストのマイクロタスクキューで動き、sleep は `setTimeout`）、トレーシング・span・メトリクス・ログ層、型付き defect チャネル、Context モジュール。
+
+捕まる 1 つ: **待つ必要のある effect（`sleep`、`promise`、`race`、`timeout`、`retry`、`fork`、scoped なもの）に `runSync` は defect**であり、promise ではありません。黙って await されない promise は同期的に見える呼び出しが `undefined` を返す道なので、同期ランタイムは劣化する代わりに拒否します。
+
+パッケージは依存ゼロで、公式ページの全スニペットは公開前に実行されています。

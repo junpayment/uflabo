@@ -1,0 +1,146 @@
+---
+title: "dev と build"
+description: "どちらも Vite。uf は Vite に何を渡すか決め、JavaScript ホスト上で起動し、プロトコルで運転する。フォークもラップも再実装もしない。"
+section: "toolchain"
+order: 1
+source: "/guide/dev"
+---
+
+## どう組み合わさるか
+
+```
+uf dev                  Rust: uf.config.js を読み、ホストを解決し、
+  │                     Vite 設定を組み、ターミナルを所有する
+  ▼
+node/bun/deno           @uniflowed/vite のドライバ: Vite を起動し、
+  │                     1 行 1 JSON イベントで報告する
+  ▼
+Vite 8                  dev サーバー、HMR、プラグインパイプライン、rollup ビルド
+  │
+  ▼
+uf transform            1 つの長寿命プロセス。すべての Flow モジュールがここを通る
+```
+
+この形から 2 つが従います。Vite のプラグインは動き続けます。本当に Vite だから。そして Flow の変換はファイルごとにシェルアウトするプラグインではありません。`@uniflowed/vite` は `uf transform` を一度起動し、すべてのモジュールをそこにパイプするので、プロセス起動コストは数千回ではなく一度だけ払われます。
+
+## uf dev
+
+ループバックに `dev.port` で bind します。React Fast Refresh は component 宣言を通じて動きます。Flow ファイルの編集はそのモジュールだけを再変換します。
+
+**デプロイと同じ方法でアプリを配信します。** ミドルウェア、次にサーバーアクション、次にルートハンドラ、次にレンダラー。だから `$route.js` はここで `uf start` 下とまったく同じにブラウザに答え、loader からの `redirect()` は「自分をリダイレクトするドキュメント」ではなく `Location` 付きの 307 です。
+
+`.env` ファイルの編集は新しい値でサーバーを再起動し、どのファイルが変わったか言います。
+
+### Strict Mode と React DevTools
+
+`uf dev` はアプリを React の `<StrictMode>` の中でハイドレートします。`uf build` はしないので、訪問者が走らせるものは二重化されません。これはあなたのマシンでだけ走るチェックです。
+
+買えるのは他に何も見えない 2 つの間違い。描画が純粋でないコンポーネントは 2 度描画され、本番で何かと交錯した 1 回の描画ではなく、あなたが見ている間に自分と食い違います。そして最初の描画後にマウントされるすべての effect はセットアップ・破棄・再セットアップされ、cleanup が setup を取り消さない effect は 1 時間後ではなく即座にリークします。
+
+やめたいなら `app: { react: { strictMode: false } }`。
+
+React DevTools はここで動き、偶然ではなく意図的に動きます。uf はドキュメント内のどのモジュールより前に `__REACT_DEVTOOLS_GLOBAL_HOOK__` を入れ、`react-dom` を 1 コピーに保ち、すべてのモジュールを React の開発設定で変換します。そしてページは動いたかを検査し、動かなかった理由をターミナルに印字します。
+
+### ブラウザが言い返せること
+
+`/__uf/` 下の 2 つのパスは `uf dev` 実行中だけ存在し、どちらもあなたのターミナルに繋がります。
+
+- `/__uf/vitals` — `vitalsBeacon()` がデフォルトで POST する場所
+- `/__uf/diagnostic` — ブラウザだけが生める診断が POST される場所。ハイドレーション不一致がもっとも大きい
+
+どちらもマシンを離れず、ビルドされたアプリにはどちらもありません。
+
+### 各境界がどこで始まりどこで終わるか
+
+`$loading.js` と `$error.js` はページの一部についての決定で、その一部は見えない唯一のものです。`<Suspense>` は自分の要素を描画しません。そこで `uf dev` ではルーターが描画するものにマークを付けます。すべての境界の children は `<span hidden data-uf-boundary>` のペアの間に座ります。
+
+```
+› 3 boundaries render /docs/:slug
+    error (uf's own error page), outside every layout — owns div#uf-root
+    error (app/docs/$error.js), inside 1 layout — owns article.doc, aside.toc
+    suspense, inside 2 layouts — showing its fallback
+```
+
+コンソールの `__ufBoundaries()` が今のページについて同じレポートを印字します。マークはハイドレーション後に足され、`import.meta.hot` の後ろにあるので、ビルドには一切入りません。
+
+### 実際に何がストリームしたか
+
+`$loading.js` は時間についての約束で、守られたかどうかはブラウザが見せにくい 1 つのことです。だから `uf dev` は何が出たか言います。
+
+```
+› /docs/:slug streamed 2 boundaries after its shell, the last 812 ms in
+    the shell went out in 4.1 kB, with 2 fallbacks in it
+    +119 ms  B:0 replaced p.skeleton with article.post (chunk 2 of 5, 1.4 kB)
+    +812 ms  B:1 replaced div.toc-loading with nav.toc (chunk 4 of 5, 900 B)
+```
+
+ルートが初めてストリームしたときと、そのストリームの形が変わったときだけ話し、ミリ秒だけが動いたときは何も言いません。
+
+別デバイスから届くには `--host` がルーティング可能なアドレスに bind しますが、**`dev.allowedHosts` が空でないときだけ**です。allow-list のない `0.0.0.0` の dev サーバーは、ローカルプロジェクトがコーヒーショップのネットワークから読める道です。
+
+## ハイドレーションが失敗したとき
+
+React は不一致を一文と「原因かもしれない 6 つ」のリストで報告します。良いリストで、答えではありません。実際に違ったノードは 2,000 個のページのどこかにまだあります。
+
+uf は両方のツリーを持つので、どちらかを言います。
+
+```
+Hydration mismatch in <Posted>
+
+at       main:nth-child(1) > p:nth-child(2) > text()[0]
+server   3 minutes ago
+client   5 minutes ago
+
+The two renders computed the same text from a value that is different every
+time it is read — a clock, a random number, or a date formatted in a locale.
+Decide the value once, above the tree, and pass it down, so both renders read
+the same number instead of each working one out.
+```
+
+同じテキストがオーバーレイ、コンソール、ターミナルの 3 か所に行きます。3 つの原因（動く値、ブラウザだけができる読み取り、ネストできないマークアップ）は差分がそれを明かす場所で名指しされ、それ以外は推測せず unknown と報告されます。間違った診断は診断なしより高くつくから。
+
+### 自分の import.meta.hot を書く
+
+```js
+import.meta.hot?.accept((next) => { /* … */ });   // または
+const hot = import.meta.hot;
+if (hot) hot.accept((next) => { /* … */ });
+```
+
+`if (import.meta.hot) { import.meta.hot.accept(…) }` ではなく。すべての Vite ガイドが書き、`uf check` が拒否する形です。Flow は識別子・`this`・`super` + プロパティパスで refinement をキーし、`import.meta` はメタプロパティで識別子ではないので、テストしても何も絞れません。アップストリーム Flow の挙動であり、uf は vendoring した Flow にパッチしません。`uf lint --fix-unsafe` が `?.` を入れてくれます。
+
+## uf build
+
+クライアントバンドルをビルドし、サーバーバンドルをビルドし、リクエストなしに描画できるすべてのルートをプリレンダリングします。出てくるのは `dist/` の静的 HTML とハッシュ付きアセット。
+
+- `--size-report` — 各チャンクのコスト。バンドルを 2 倍にした依存が、ビルドしたのと同じコマンドで見える
+- `--analyze` — 次の問い「なぜ」に答える。ルートごとにブラウザに出荷しサーバーで走る各モジュール、重さ、そこへ至る import チェーン。`.uf/build/meta/uf-bundle-analysis.html` を書く
+- `--compile` — サイトである実行ファイルを 1 つ足す。ビルドには bun が必要、実行には何も不要
+
+```
+$ uf build --compile
+  standalone
+    binary           dist/docs
+    runtime          bun
+    bytes            59.26 MB
+    embedded assets  67
+    embedded bytes   1.81 MB
+```
+
+## uf を越えて手を伸ばす
+
+uf は Vite 設定を生成しますが、隠しません。`uf.config.js` トップレベルの `plugins` 配列は uf が入れるプラグインに追加され、`dev` と `build` は Vite 自身のオプションに渡されます。
+
+```js
+// @flow
+import { defineConfig } from "@uniflowed/config";
+import svgr from "vite-plugin-svgr";
+
+export default defineConfig({
+  app: { router: { entry: "app.js", root: "app" } },
+  plugins: [svgr()],
+  dev: { port: 4000 },
+});
+```
+
+`uf inspect --json` は uf が解決したもの（ドライバに渡した設定を含む）を印字します。Vite が頼んでいないことをしているときに見る場所です。

@@ -1,0 +1,271 @@
+---
+title: "環境（ランタイムと .env）"
+description: "1 つの答えで 2 つの問い。各コマンドがどの Node / Bun / pnpm で走るか、そして process.env と import.meta.env の値がどこから来るか。"
+section: "toolchain"
+order: 6
+source: "/guide/env"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+## ツールを宣言する
+
+<Figure title="uf.config.js">
+
+```js
+// @flow
+import { defineConfig } from "@uniflowed/config";
+
+export default defineConfig({
+  runtime: "node@24",
+  packageManager: "pnpm@10",
+  build: { runtime: "node@26" },
+  test: { runtime: "bun@1.4" },
+});
+```
+
+</Figure>
+
+各キーは**そのツールが使われる場所で**名指しされ、それがそのツールの用途でもあります。このプロジェクトは Node 24 で配信し、Node 26 でビルドし、Bun 1.4 でテストを走らせ、pnpm 10 でインストールします。チェックアウトしたすべてのマシンがその 4 つを走らせます。
+
+| コマンド | 走る場所 |
+| --- | --- |
+| `uf dev` `uf build` `uf preview` | `build.runtime`、次に `runtime` |
+| `uf test` | `test.runtime`、次に `test.runner` が連れてくるランタイム、次に `runtime` |
+| `uf start` `uf run` `uf exec` | `runtime` |
+| `uf install` などパッケージ系 | `packageManager`、次に `pm.packageManager`、次に `package.json#packageManager`、次にロックファイル |
+
+行の中で最初に何か言ったキーが決めます。どれも書かないプロジェクトは、これらが存在する前と同じように動きます。
+
+### バージョンの書き方
+
+| 書き方 | 意味 |
+| --- | --- |
+| `"node"` | PATH にある node。持たないマシンは拒否され、別のランタイムを渡されることはない |
+| `"node@26"` | 最新の 26.x。コマンドが最初に必要としたときに解決され `uf.lock` に固定される |
+| `"node@26.8.2"` | 正確にそのリリース |
+| `"node@^26"`, `"node@>=24"` | **拒否** |
+
+プレフィックスが手を伸ばすべきものです。誰もパッチ版を選ばずにリリース系列にリポジトリを留め、ロックがどのマシンもパッチ版で合意させます。**範囲が拒否されるのは、範囲が環境ではないから**です。範囲は「これで何がビルドできるか」に答えますが、リポジトリが答えなければならないのは「何でビルドされているか」です。
+
+```
+error: /app/uf.config.js: build.runtime is `node@^26`, which is a range, and a range is not an environment: it can resolve to a different release tomorrow. Write a version prefix instead — `node@26` is the newest 26.x, resolved once and locked in uf.lock
+```
+
+## 最初の実行
+
+```
+› build.runtime is `node@26`: locked at 26.8.2 in uf.lock
+› installing node@26.8.2 for build.runtime — once, into the store every project on this machine shares
+```
+
+`node@26` を必要とする最初のコマンドが、公開元のリリース一覧（Node は nodejs.org、Bun / Deno / npm / pnpm / Yarn は npm レジストリ）を読み、最新の一致を `uf.lock` に書きます。
+
+<Figure title="uf.lock">
+
+```json
+{
+  "toolchain": {
+    "node@26": "26.8.2"
+  }
+}
+```
+
+</Figure>
+
+**コミットしてください。** 以後は CI を含むすべてのマシンでロックが答えで、決める目的でリリース一覧を読むことは二度とありません。新しい 26.x に移るのは `uf env update` です。
+
+固定したバイナリを起動するのは半分です。Vite のワーカー、シェルアウトするプラグイン、node を spawn するテスト、`node_modules/.bin` のすべての `#!/usr/bin/env node` は PATH でランタイムを見つけるので、**そのコマンドが起動するすべてのものの PATH 先頭にランタイムのディレクトリが入ります。**
+
+`uf install --frozen-lockfile`（CI のインストール）はロックファイルを変えないので、`uf.lock` がまだ固定していないプレフィックスは解決されずに拒否されます。一度 `uf install` を走らせて `uf.lock` をコミットしてください。
+
+## 何が走るか見る
+
+```
+$ uf explain build
+
+    3. JavaScript host
+        provider  node 26.8.2
+        what      runs the builder and any JavaScript plugin; `build.runtime` names node@26, locked at 26.8.2 in uf.lock; in the store, and first on PATH for every process it starts
+```
+
+`uf explain <command>` はコマンドが走るリリース、選んだキー、ロック、ストアがまだ持っているかを名指しします。解決せず読むだけなので、explain がダウンロードを起こすことはありません。`uf inspect` は全ツールを一覧します。
+
+```
+  tools
+    runtime          node@24 (runtime) · locked at 24.21.0
+    build runtime    node@26 (build.runtime) · locked at 26.8.2
+    test runtime     bun@1.4 (test.runtime) · locked at 1.4.2
+    test runner      uf (uf's default)
+    package manager  pnpm@10 (packageManager) · locked at 10.34.5
+    builder          vite (uf's default)
+```
+
+## 先にインストールする
+
+```sh
+uf env install   # CI イメージや、これからオフラインになるラップトップが欲しいもの
+uf env list      # 各ツール、用途、ストアが持っているか。uf.lock を読み、何も取得しない
+uf env update    # 各公開元のリリース一覧を再読し、uf.lock の全プレフィックスを最新へ。インストールはしない
+uf env gc        # 生きたルートが到達しないものをストアから回収。--dry-run が先に走らせる版
+```
+
+各ツールはツール・バージョン・プラットフォームでキーされたストア（`node-26.8.2-darwin-arm64`）に一度だけ展開され、その正確なリリースを欲するすべてのリポジトリが同じコピーを使います。
+
+uf が書くのは 4 か所だけです。ストア、その横のプロジェクトごとのリンクディレクトリ、`uf.lock` の toolchain レコード、環境を選んだ後のリポジトリ内 `.uf/profile`。**sudo のステップも、編集するシェルプロファイルも、`.zshrc` で初期化するバージョンマネージャもありません。** ダウンロードのチェックサムは展開前に、公開元がアーカイブの横に出荷するダイジェストに対して検証されます。
+
+## コマンドの外でツールを使う
+
+```sh
+$ uf env exec node --version
+v24.21.0
+```
+
+`uf env exec` は 1 コマンドのあいだプロジェクトのツールを PATH の前に置いて実行し、そのコマンドの終了コードで終了します。あなたのシェルは変わらず、マシン上の他のリポジトリも変わりません。
+
+リンクはプロジェクト内ではなくストアの横にあり、プロジェクト名とパスでキーされます。これが「プロジェクトごと」にした性質を保ちます。違う Node 上の 2 つのチェックアウトが隣り合って座り、どちらも「アクティブ」ではありません。
+
+**これが nix develop のモデルです。** 環境はディレクトリが持つものであり、シェルが切り替わって入るものではありません。アクティベートするものも、ディアクティベートするものもなく、`uf env exec` を走らせるスクリプトは、あなたのシェルから始まってもエディタからでも CI からでも同じツールを得ます。
+
+## env.toolchain からの移行
+
+以前はツールを 1 つのリストに固定していました。
+
+```js
+export default defineConfig({
+  env: { toolchain: { node: "24.14.0", pnpm: "9.15.0" } },
+});
+```
+
+そのリストは「このリポジトリがどのツールを持つか」を言い、**各ツールが何のためかは言いません**。だからどのコマンドもそれで走らず、`uf env exec` だけが使いました。今も動き、設定を読むすべてのコマンドが何を書くべきか言います。
+
+| 以前 | 現在 |
+| --- | --- |
+| `env: { toolchain: { … } }` | `runtime` `build.runtime` `test.runtime` `packageManager`、それぞれ使う場所で |
+| `pm: { packageManager: "pnpm" }` | `packageManager: "pnpm"`（リリースも固定できる） |
+| `builder: { module: "@uniflowed/vite" }` | `build: { builder: "vite" }` |
+| `test: { runner: { … } }` | `test: { runner: "uf" }`、またはデフォルトなので何も書かない |
+
+古いキーと置き換えは、同じことを言っている間は並んでいられます。食い違うと、両方を名指しして設定が拒否されます。どちらを意図したかは優先順位で uf が答えてよい問いではないから。
+
+## ここでやらないこと
+
+uf バイナリ自体は管理しません（それは `uf use` と `uf self-update`）。`.nvmrc` も `.tool-versions` も読みません。**`uf.config.js` が uf プロジェクトの「何で走るか」を書き留める 1 か所**で、同じ問いへの第 2 の真実の源は機能ではなく問題だからです。`package.json#engines` は 1 つのことだけ読まれます。そこに書かれた正確なバージョンを `uf env install` がインストールすることです。
+
+---
+
+
+
+ここまではツールの話でした。ここからは値の話です。URL、機能フラグ、データベースのパスワード。ラップトップと CI と本番で違い、コードとしてコミットしてはならないもの。
+
+```
+# ブラウザが見てよいものは VITE_ で始める
+VITE_API_URL=https://api.example.com
+
+# それ以外はサーバーだけのもの
+DATABASE_URL=postgres://localhost/app
+```
+
+<Figure title="app/$page.js">
+
+```js
+// @flow
+export component Page() {
+  // ビルド時に置換され、ブラウザがダウンロードするバンドルに入る
+  return <a href={String(import.meta.env.VITE_API_URL)}>the API</a>;
+}
+```
+
+</Figure>
+
+サーバーコード（ルートハンドラ、loader、サーバーでしか描画されないコンポーネント）は、プレフィックスなしのものも含めて `process.env` で読みます。
+
+`uf dev` `uf build` `uf preview` `uf start` `uf test` `uf run` `uf exec` はすべて同じファイルを同じ方法で読みます。**dev サーバーに届いてビルドに届かない値は、設定ではなくバグです。**
+
+## どのファイルを、どの順で
+
+コマンドはモードの中で走り、モードが 4 つのうち 2 つを選びます。
+
+| ファイル | いつ読まれるか | コミットするか |
+| --- | --- | --- |
+| `.env` | 常に | する |
+| `.env.local` | 常に | しない（あなたのマシンのもの） |
+| `.env.<mode>` | そのモードで | する |
+| `.env.<mode>.local` | そのモードで | しない |
+
+この順で読まれ、最後に名前を設定したものが勝ちます。`.env.production` は `.env` に勝ち、`.env.production.local` は両方に勝ちます。ないファイルはスキップされるので、`.env.local` を `.gitignore` に入れても、持ったことのないマシンで何も壊れません。
+
+### モード
+
+`uf dev` は `development`、`uf build` / `uf preview` / `uf start` は `production`、`uf test` は `test`、`uf run` / `uf exec` は `development`。ブラウザが `import.meta.env.MODE` として読むものでもあります。
+
+別のことを言う方法は 4 つ、この順で試されます。コマンドの `--mode <name>`、`uf env use <name>` が `.uf/profile` に記録したプロファイル、`uf.config.js` の `env.active`、コマンド自身のデフォルト。
+
+**モードはファイルを選び、最適化は選びません。** `uf build --mode staging` は依然本番ビルドです（minify され、`import.meta.env.PROD` が true）。それを変える唯一の変数は `NODE_ENV` で、ここでは普通の変数であり Vite が読みます。`.env` に `NODE_ENV=development` を置くと `uf build` すら開発ビルドを生みます。意図していないなら `.env` に `NODE_ENV` を置かないでください。
+
+### 環境が常に勝つ
+
+uf 起動時にすでに設定されている変数は、ファイルに上書きされることが決してありません。
+
+```sh
+DATABASE_URL=postgres://prod/app uf build
+```
+
+`.env.production` が何と言おうとこれを使います。**それが `.env` ファイルをポリシーではなくデフォルトにするもの**であり、CI のシークレット、コンテナの環境、`docker run -e` が設定ゼロで動き続ける理由です。
+
+`uf inspect` はモード、読まれたファイル、そこから出た変数の数を印字します。**名前だけで、値は決して印字しません。** その出力は issue に貼られるものだから。
+
+### ブラウザに届くもの
+
+クライアントプレフィックス（プロジェクトが別のものを設定するまで `VITE_`）で始まる名前だけです。その値はブラウザがダウンロードする JavaScript に置換されるので**公開**です。サイトを開ける人なら誰でも読めます。
+
+それ以外はサーバーコードから `process.env` で使え、ブラウザに出荷されるモジュールが尋ねてもクライアントバンドルに書かれることは決してありません。クライアントコードの `import.meta.env.DATABASE_URL` はパスワードではなく `undefined` です。
+
+境界は Vite のもので、uf は広げず、プレフィックスなしの値が `dist/` のどのファイルにもないことを確かめるテストがあります。空のプレフィックスは拒否されます。全変数をバンドルに入れることになるから。
+
+**覚えるべきルール: シークレットならプレフィックスで始めてはならない。**
+
+### ファイル形式
+
+```
+# コメント。空行は無視される
+export ALSO_FINE=yes          # `export ` は許され、無視される
+
+QUOTED="  spaces are kept  "  # 末尾コメントは前にスペースが要る
+LITERAL='no $expansion, no \n escapes, exactly as written'
+MULTILINE="first line
+second line"
+
+HOST=example.com
+API_URL=https://${HOST}/api   # ${} なしの $HOST でもよい
+PRICE=costs \$5               # リテラルのドル
+```
+
+`$NAME` と `${NAME}` は、すでに定義されているもの（このファイルの前方、カスケードの前のファイル、環境）に展開されます。環境の値が展開されるもので、それがその名前が持つことになる値だからです。
+
+**未定義の展開は空文字列ではなくエラー**で、これは決定です。`https://$HSOT/api` が静かに `https:///api` になるのは、本番に届いてまったく別の場所で失敗するタイポだからです。
+
+### 自分でファイルを名指す
+
+<Figure title="uf.config.js">
+
+```js
+// @flow
+export default {
+  env: {
+    files: ["config/shared.env", "config/local.env"],
+  },
+};
+```
+
+</Figure>
+
+カスケードを完全に置き換えます。それらのファイル、その順、後が勝ち、プロジェクトルートからの相対、`.env` 系は一切なし。
+
+**プロジェクトの中だけです。** 絶対パス、`..`、`~`、外を指すシンボリックリンクはすべて拒否されます。クローンしたばかりのリポジトリの `uf.config.js` が、`~/.aws/credentials`（`NAME=value` としてパースできてしまう）を以後のすべてのコマンドの環境に読み込めるべきではないからです。
+
+### 変数側がやらないこと
+
+- **その場でリロードしない。** `uf dev` はカスケードが選ぶファイルを監視し、どれかが変わればどのファイルかを言ってサーバーを再起動します。しないのは、走っているページに値を差し替えることです。再起動が誠実な粒度です。プレフィックス付きの値はバンドルに置換されて届くので、新しい値は置換し直し、それを読んだ全モジュールを再評価しなければなりません。
+- **デプロイに旅をしない。** `uf build --adapter node` が書くディレクトリは素の `node server.js` で動き、そのプロセスは uf ではありません。環境をホストから読み、デプロイのシークレットはそこに属します。
+- **シークレットストアではない。** `.env` はディスク上のファイルです。uf が HTTP 越しの配信を拒否し、プレフィックスなしをバンドルに入れることを拒否しても、暗号化されるわけではありません。

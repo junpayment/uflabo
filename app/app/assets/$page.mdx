@@ -1,0 +1,157 @@
+---
+title: "画像、フォント、アイコン、カード"
+description: "画像を import すればレイアウトが求める幅にリサイズされ、フォントを import すればセルフホストされ同じ幅を占めるフォールバックと組にされ、アイコンを import すればビルドが到達した集合だけの 1 スプライトに入る。すべてビルド時に uf の中で。"
+section: "app"
+order: 13
+source: "/guide/assets"
+---
+
+## 画像
+
+```js
+import * as React from "@uniflowed/react";
+import { Image } from "@uniflowed/web";
+import hero from "./hero.jpg";
+
+export component Page() {
+  return <Image src={hero} alt="The bridge at dusk" sizes="(max-width: 640px) 100vw, 640px" />;
+}
+```
+
+`hero` は URL ではありません。`uf assets` がファイルをデコードして生んだもの: 固有の幅と高さ、書いたすべてのバリアント、ブラープレースホルダ。`Image` はそれをマークアップにします。各幅を名指す `srcset`、バイトが届く前に箱を予約する固有寸法、`loading="lazy"` と `decoding="async"`。
+
+自分で `<img>` を書くのとの違いは小さくありません。**`srcset` は他にどのサイズが存在するかを知る何かにしか書けず、作るまでは何も知らない**からです。
+
+- `dist/` には、宣言した幅のうちソースより広くないものごとに 1 バリアント + ソース幅で 1 つ。uf は決してアップスケールしません。各バリアントはコンテントハッシュされます。
+- **ブラープレースホルダ**は小さな版を `background-image` としてインラインし、本物がその上に描かれます。透過画像には付きません（下に描かれるので透過ロゴでは永遠に見え続ける）。
+- **`priority={true}`** は eager にし、`fetchpriority="high"` を与え、`<img>` と同じバリアントを求める `<link rel="preload">` を出します。ページ最大の画像では、これが LCP の大半です。
+- **`sizes` は設定してください。** `w` ディスクリプタつきの `srcset` に `sizes` がないとブラウザには `100vw` の意味になります。何も言わなければ uf は `(max-width: <intrinsic>px) 100vw, <intrinsic>px` を書きますが、これは uf が見えないレイアウトについての推測です。
+
+## フォント
+
+```js
+import { Font } from "@uniflowed/web";
+import inter from "./Inter.woff2";
+
+export component Layout(children: React.Node) {
+  return (
+    <div style={{ fontFamily: inter.fontFamily }}>
+      <Font src={inter} />
+      {children}
+    </div>
+  );
+}
+```
+
+3 つが起きます。ファイルは**セルフホスト**され（コンテントハッシュでビルドにコピー、実行時にサードパーティへのリクエストなし）、`font-display: swap` と正しい `format()` で**宣言**され、**metric 一致のフォールバック**と組にされます。読者がすでに持つフォントに対する第 2 の `@font-face` で、あなたのフォントの `head` `hhea` `OS/2` テーブルから計算した `size-adjust` `ascent-override` `descent-override` `line-gap-override` を運びます。
+
+最後の 1 つがわざわざやる理由です。`font-display: swap` はフォールバックで即テキストを見せてから交換し、2 つの face のサイズが違うので交換がすべての行を動かします。フォールバックを同じ空間を占めるまでスケールすれば、交換は何も動かしません。
+
+**`inter.fontFamily` を使ってください**（自分でファミリ名を書かない）。本物の face、次に一致させたフォールバック、次にスケールされたローカル face の順です。
+
+### unicode-range 分割
+
+```js
+export default defineConfig({
+  app: { builtins: { fonts: { subset: "ranges" } } },
+});
+```
+
+Latin / Greek / Cyrillic をカバーするファミリは 1 ファイルに 3 スクリプトで、1 つの読者が 3 つ全部をダウンロードします。分割をオンにすると、uf はフォント自身の文字マップを読み、スクリプトごとのバケツに分け、バケツごとに 1 ファイルを正確な `unicode-range` つきで出します。**何も失われません。** だからこれがオンにすべきモードで、`subset: "none"` がデフォルトです。
+
+デフォルトが none の理由: サブセットは構造的に lossy です。ビルドはサーバーが描画するテキスト、ユーザーが打つテキスト、翻訳が持ち込むテキストを見えないので、ソース内の文字列にフォントを黙って切り詰めるツールチェーンは、あなたには正しく見えて、名前にダイアクリティカルマークのある誰かには豆腐で描画されるページを生みます。`"ranges"` は何も取り除かないから安全です。
+
+`Font` はファミリが何に分割されても**ちょうど 1 つの `<link rel="preload">`** を出します。`preload={false}` で最初の画面を描かない face を外せます。
+
+## アイコン
+
+```js
+import { Icon, IconSprite } from "@uniflowed/web";
+import sprite from "uf:icon-sprite";
+import star from "uf:icon/star";
+
+export component Layout(children: React.Node) {
+  return (
+    <>
+      <IconSprite sprite={sprite} />
+      <button type="button"><Icon icon={star} label="Favourite" /></button>
+      {children}
+    </>
+  );
+}
+```
+
+`uf:icon/star` は `icons/star.svg`（`app.builtins.icons.dir`）に解決し、マークアップではなくシンボルの id と viewBox に評価されます。`uf:icon-sprite` はビルドが到達したすべてのアイコンの `<symbol>` を持つ 1 つの `<svg>` で、**それ以外は含みません**。ランタイムのアイコンライブラリにはできないことです。
+
+スプライトは fetch ではなくドキュメントにインラインされます。`<use href="sprite.svg#id">` は Safari でドキュメント越しに解決したことがなく、Chrome ではクロスオリジンでブロックされるからです。
+
+`label` はアイコンが必要とするアクセシビリティの決定のすべてで、もっともよく逆にされます。**アイコンがコントロールなら渡し、横にテキストがあるなら外す。**
+
+`.svg` は Vite のものです。拡張子を claim すれば `vite-plugin-svgr` から奪うことになり、それはレッドライン 8 です。だからアイコンは uf 自身の `uf:` 名前空間に住みます。
+
+アイコンはドキュメントにインラインされ依存から来ることもあるので、uf は**除去ではなく拒否**します。`<script>`、`<foreignObject>`、`on…` 属性、`javascript:` 値、別オリジンへの参照は、ファイルを名指すメッセージで import を失敗させます。
+
+## Open Graph カード
+
+```js
+import { OgImage } from "@uniflowed/web";
+import card from "./guide.og.json";
+
+export component Head() {
+  return <OgImage card={card} origin="https://example.com" />;
+}
+```
+
+`guide.og.json` はテンプレートで、ドキュメントではありません。複合拡張子が uf の claim のすべてで、普通の `.json` は Vite のままです。
+
+```json
+{
+  "eyebrow": "Writing code",
+  "title": "Images, fonts, icons and cards",
+  "subtitle": "Everything the build knows and the runtime cannot",
+  "background": { "from": "#0b1020", "to": "#161d3d" },
+  "foreground": "#f8fafc",
+  "accent": "#7c8cff",
+  "font": "../../brand/Inter-SemiBold.ttf"
+}
+```
+
+uf は 1200×630 で描き、PNG をコンテントハッシュし、import は URL・サイズ・alt テキストに評価されます。`OgImage` は皆が間違える 2 つを含むタグを書きます。絶対 URL（相対 `og:image` は Open Graph 画像ではない）と `twitter:card: summary_large_image`。
+
+**これはテンプレートであり、意図的にレンダラーではありません。** 「JSX から画像」はドキュメントを画像に描画すること、つまり CSS レイアウトエンジンです。ブラウザを出荷するか近似するかで、ブラウザはアプリのビルドに必要とすることを uf が拒否する依存であり、近似は微妙に間違ったカードを生みます。だから固定の配置（背景、罫線、eyebrow、title、subtitle）を `ab_glyph` でネイティブに描きます。
+
+`ab_glyph` は shaping をしないので、Latin / Greek / Cyrillic / CJK とその周りの句読点は正しく、それ以外は文字を名指すメッセージでビルドを失敗させます。RTL スクリプト、ブラーミ系、Thai / Lao / Khmer / Myanmar、結合文字、ZWJ、フォントにグリフのない文字、カラー/ビットマップテーブル（絵文字）。**間違ったカードは存在しないカードより悪い。** ビルドが成功したと言ってしまうから。uf はフォントも出荷しません。デフォルト書体はライセンスを伴うからです。
+
+## 設定
+
+```js
+export default defineConfig({
+  app: {
+    builtins: {
+      images: { widths: [640, 750, 828, 1080, 1200, 1440, 1920], quality: 75, placeholder: true },
+      fonts: { display: "swap", fallback: "Arial", subset: "none", preload: true },
+      icons: { dir: "icons" },
+      og: { font: null },
+    },
+  },
+});
+```
+
+これがデフォルトです。`fallback` は uf がスケールするローカル face で、uf が計測済みのものでなければなりません: Arial、Times New Roman、Courier New。
+
+## 開発とビルドは一致する
+
+パイプラインは 1 つです。`uf dev` と `uf build` は同じパラメータで `uf assets` を運転し、`.uf/cache/assets` の同じキャッシュに書き、同じ名前の同じファイルを得ます。マニフェストもダイジェスト単位でキャッシュされるので、変更のないプロジェクトの 2 回目のビルドはアセットごとに小さな JSON を 1 つ読み、デコードもリサイズもサブセットもラスタライズもしません。無効化ステップはありません。キーがすべての入力のダイジェストだからです。
+
+## やらないこと
+
+エンコーダは純 Rust です。C ライブラリなし、ネイティブツールチェーンなし。代償は率直に:
+
+- **AVIF なし。** AV1 エンコーダが必要で、純 Rust のものは約 80 クレートを whole-program LTO でコンパイルするもの。アセットパイプラインの副作用ではなく意図的に下すべき決定。
+- **lossy WebP なし。** libwebp は C。
+
+だから uf が出せるモダンフォーマットは lossless WebP で、それが勝つ場所は明白ではありません。ロゴやグラデーションは PNG の半分程度、写真は同等か悪化、狭い幅にリサンプルした UI スクリーンショットは 7 倍大きくなります。**uf は推測しません。** 全幅で両方をエンコードし、WebP が**全幅で**小さいときだけ提供します。負けたら WebP ファイルは書かれず、判断したバイト数が import 上に `declined` として載ります。
+
+その他: サブセット済み face は WOFF 1.0（WOFF2 エンコーダなし）、サブセットは TrueType アウトラインの `.ttf` / `.otf` / `.woff` が必要、import ごとに 1 ウェイト（`Inter-Bold.woff2` はファミリ `Inter-Bold` になる）、リクエスト時エンドポイントなし（クエリが名指すものをリサイズするエンドポイントは DoS 増幅器）。デコーダのない画像（GIF、既存の AVIF）はそのままコピーされ、import のノートにそう書かれます。
+
+`?url` `?raw` `?inline` つきの import は Vite のもので、uf は素の形だけを claim します。

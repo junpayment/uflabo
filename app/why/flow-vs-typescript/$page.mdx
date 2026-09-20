@@ -1,0 +1,113 @@
+---
+title: "Flow と TypeScript"
+description: "TypeScript はほとんどの行で勝つ。Flow が勝つのは、React 自身が書かれた型システムだからこそ存在する 4 つの行。"
+section: "why"
+order: 3
+source: "/guide/typescript"
+---
+
+## 前提
+
+読者はすでに TypeScript を書いている、と公式ドキュメントは決めつけています。「比較が近いふりをするのは読者の注意を失う最速の方法」なので、最初に言い切ります。**TypeScript がほとんどの行で勝ちます。** Flow が勝つのは、React 自身が Flow で書かれているからこそ存在する 4 つの行だけです。そして Flow の実装に関する 1 つの事実が、uf のようなツールチェーンを作れる理由です。
+
+## TypeScript が勝つ行
+
+**エコシステム。** npm のパッケージは `.d.ts` を出荷し、Flow は libdef を読みます。uf はパッケージ自身または `@types` の宣言を Flow に翻訳するので、パッケージは `any` ではなく型付きになります。ただし翻訳は宣言そのものではありません。TypeScript が言えて Flow が言えないことは `any` になり、残りの一部は TypeScript より緩く読まれます。20 個の型付き依存の上に立つなら、これは依然として請求書です。以前より小さくなり、パッケージごとに数えられるようになった、というだけです。
+
+**エディタ。** `uf lsp` が答えるのは、ドキュメントを開いた・変更したときの診断、フォーマット、クイックフィックス、ホバー、そして `uf.config.js` 内だけの補完です。**リネーム、定義ジャンプ、参照検索、自動 import、自分のモジュール内での補完はありません。** テストが「README が主張する機能」と「主張しない機能の不在」の両方を実バイナリに対して検証しています。
+
+**人。** TypeScript を書いたエンジニアの方が多く、答えも多く、次のコントリビュータが `renders` を見たことがある確率は低い。
+
+uf はこれらのどれにも反論しません。
+
+## uf が負ける行（Flow ではなく uf の問題）
+
+上のリストは Flow のものです。こちらは uf のもので、「直せる部分」であり「今週あなたを噛む部分」なので、より有用です。
+
+**libdef が足りない。** TypeScript プロジェクトはほぼどんなパッケージにも `@types/*` を得ます。Flow 自身の libdef は DOM・標準ライブラリ・React をカバーし、そこで止まります。`uf check` は `@flow` を宣言する依存を `node_modules` の manifest から読んで exports map をたどり、本物の宣言に対して型付けします。TypeScript 宣言を出荷する依存はその翻訳から型付けされます。どちらもない依存は `any` で、レポートに名前が出ます。
+
+```
+  types checked  31
+  asked about    8 of 31
+  inference      196.7ms
+  builtins       26.6ms (cold)
+
+  › these imports are typed as any; uf resolved no module for them
+    - @uniflowed/host/module-mocks
+    - node:async_hooks
+    - node:module
+```
+
+TypeScript ならこのリストは空でしょう。それがこの行です。
+
+**`import.meta.hot` のガード。** `uf check` は Vite クライアント API（`import.meta.glob`、`import.meta.hot`、アセット import）を Flow で宣言しているので、libdef なしで型が通ります。しかし Flow は `import.meta` に対するテストを refinement できません。Vite 公式ドキュメントが書く `if (import.meta.hot)` は `uf check` ではエラーになり、uf の lint（`vite/hot-needs-optional-chaining`）は `import.meta.hot?.accept()` を求めます。
+
+**import も export もないファイルはスクリプト。** ECMAScript の 2 つのゴール記号のどちらで書かれているかを uf はこれで決めます。差が出るのは `await` で、モジュールはトップレベルで await できますがスクリプトではできません。await するのに import も export もないファイルは拒否され、`export {}` を 1 行足せば済みます（#204）。
+
+## `.d.ts` を出荷するパッケージ
+
+npm の大半は TypeScript で書かれ宣言ファイルを公開しており、`uf check` はそれを読みます。exports map の `types` 条件、次に `types` / `typings` と `typesVersions`、パッケージが何も出荷しなければ `@types/<name>`。uf はそのファイルと、そこから到達するすべての宣言ファイルを Flow に翻訳し、結果に対してあなたのコードをチェックします。2 回目以降は `.uf/cache/dts` から読みます。
+
+**そのまま通るもの:** interface と type alias（optional / readonly / index signature 含む）、union / intersection / literal、ラベル付き・省略可能・rest つきタプル、オーバーロード、bounded / default ジェネリクス、`keyof`、`infer` つき conditional type、mapped type、template literal type、type guard、class、enum、namespace、`export =`、ユーティリティ型。
+
+意味が異なる箇所は「TypeScript が意味したこと」に翻訳されます。オブジェクト型は inexact な interface に、プロパティは共変に、`unknown` は `mixed` に、`never` は `empty` に。
+
+**穴になるもの（`any`）:** `declare global` と `declare module "x"` の拡張、assertion signature、タプル内の配列 rest、`Symbol.iterator` / `Symbol.asyncIterator` 以外の computed key、`intrinsic`、JSDoc 型、`typeof f<T>`、`import x = N.y`、名前でないものの `export =` / default export、パッケージが出荷しないファイルへの相対 import、非定数 enum メンバーや文字列と数値の混在、Flow が結び付けられない同名の 2 宣言、static index signature、式を extends する class、`globalThis`。
+
+#946 で報告された 3 パッケージの数字:
+
+| パッケージ | 宣言ファイル | 穴 | 翻訳内部の Flow エラー |
+| --- | --- | --- | --- |
+| zod@4.6.5 | 95 | 17 | 226 |
+| date-fns@4.4.0 | 258 | 1 | 0 |
+| @tanstack/query-core@5.102.8 | 12 | 5 | 0 |
+
+`uf check --explain-any <package>` が、穴の 1 つ 1 つを宣言ファイル・行・宣言・理由つきで列挙します。
+
+## Flow だけが綴れること
+
+### props は引数リスト
+
+```js
+component Avatar(src: string, size: number = 32, alt?: string) {
+  return <img src={src} width={size} height={size} alt={alt ?? ""} />;
+}
+```
+
+同じ仕事をする TypeScript は 1 つのものの 3 つの宣言です。
+
+```ts
+type AvatarProps = { src: string; size?: number; alt?: string };
+
+function Avatar({ src, size = 32, alt }: AvatarProps) {
+  return <img src={src} width={size} height={size} alt={alt ?? ""} />;
+}
+```
+
+interface、分割代入、デフォルト値。1 つの prop を記述する 3 か所は食い違えます。`size?: number` は「省略できる」と言いますが、省略したとき `32` になることは何も言いません。
+
+### hook のルールが型エラー
+
+TypeScript の答えは `eslint-plugin-react-hooks`。第 2 のツール、第 2 の設定、型チェッカーが何の意見も持たないことの強制です。Flow の `hook` 構文はそれを「他のすべてをチェックしているのと同じチェッカー」の仕事にします。
+
+### 子を制約できる
+
+TypeScript の最寄りの表現は `children: ReactElement<ComponentProps<typeof Tab>>` ですが、これは要素の props を検査するので、たまたま `label: string` を取る別コンポーネントも通り、`Tab` のラッパーは通りません。Flow は render チェーンを検査します。デザインシステムが本当に意味しているのはそちらです。
+
+### 網羅性が言語機能
+
+`match` はケースが欠けると `match-not-exhaustive` を報告し、決して走らないパターンにも印を付けます。Flow の enum は `cast`、`isValid`、`members`、`getName` を持つ実行時の値で、文字列リテラルの union はそのどれでもありません。
+
+## なぜ uf を作れたのか
+
+これは他のどこにも書かれていない部分であり、このプロジェクトが存在する本当の理由です。
+
+**Flow のパーサーと型チェッカーには公式の Rust 移植があり、uf はそれをリンクしています。** `upstream/flow` はコミットに固定された git submodule で、`upstream/flow/rust_port/crates/flow_parser` は Flow 自身が走らせるパーサーです。第 2 のバックエンドも、それを選ぶ feature flag もありません。
+
+代償も同じ段落に書かれています。移植の 23 クレートが `#![feature(box_patterns)]` を宣言していて、その feature は 2026-09-01 前後の nightly で削除されたため、`rust-toolchain.toml` はワークスペース全体を `nightly-2026-08-01` に固定しています。**安定版 Rust では uf をビルドできません。**
+
+## どう決めるか
+
+**TypeScript に留まる**: 穴を許容できない型付き依存が多い（`uf check --explain-any` が列挙します）、チームが採用中、uf が負ける行のどれかが今期の生命線。「それはほとんどの人であり、妥当な答えだ」。
+
+**uf を試す**: JavaScript-with-React ではなく React を書いていて、型システムに捕まえてほしいのが「足りない prop、間違った場所からの hook 呼び出し、属さない子コンポーネント、拡張し忘れた match」であり、インターフェースが予告なく変わるプレリリースで作業できる。

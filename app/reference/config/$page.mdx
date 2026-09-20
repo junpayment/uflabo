@@ -1,0 +1,178 @@
+---
+title: "uf.config.js 設定リファレンス"
+description: "唯一の設定ファイル。Flow なので defineConfig が書いた場所で型チェックし、すべてのキーにデフォルトがある。"
+section: "reference"
+order: 2
+source: "/reference/config"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+<Figure title="uf.config.js">
+
+```js
+// @flow
+import { defineConfig } from "@uniflowed/config";
+
+export default defineConfig({
+  app: {
+    router: { entry: "app.js", root: "app" },
+  },
+});
+```
+
+</Figure>
+
+`uf inspect --json` がデフォルトを埋めた解決済みの設定を印字します。「実際に何を使っているか」に答えるいちばん速い方法です。`uf lsp` を動かすエディタは、このページのキーを打ちながら補完します（`@uniflowed/config` が宣言するドキュメント付き、固定集合の型を持つキーは値も）。
+
+## トップレベル
+
+| キー | 何を設定するか |
+| --- | --- |
+| `runtime` | コマンドに近いキーが何も名指さないときに走るランタイム（`"node@24"`） |
+| `packageManager` | `uf install` などが運転するマネージャ（`"pnpm@10"`） |
+| `app` | アプリ: ルーター、ランタイム、React、レンダリング、組み込み |
+| `build` | 本番ビルド: エントリ、出力、予算、ソースマップ、走るランタイムとビルダー |
+| `dev` | dev サーバー: host、port、ファイルアクセス、許可ホスト |
+| `site` | ビルドされたサイトが配信される場所と、クローラ向けに `uf build` が書くもの |
+| `env` | `.env` ファイルとデフォルトモード（`toolchain` は非推奨） |
+| `fmt` | `uf fmt` |
+| `ignore` | どのコマンドも降りないパス（`uf fmt` `lint` `check` `test` `doc`） |
+| `lint` | `uf lint` と Flow の組み込み lint |
+| `test` | `uf test` と、走るランタイムとランナー |
+| `permissions` | プロジェクト自身のコードが届いてよいもの。なければ制限なし |
+| `plugins` | Vite プラグイン、uf 自身のものに追加 |
+| `vite` | Vite 自身の設定、uf のものの上にマージ |
+| `tasks` | `uf run` の名前付きタスク |
+| `staged` | コミット前に `uf prepare` がステージ済みファイルに走らせるタスク |
+| `ui` | `uf ui add` がプロジェクト所有コンポーネントを書く場所 |
+| `pm`, `publish`, `package`, `release` | uf が読み書きするレジストリと、リリースの組み方 |
+| `accessibility` | axe のルール集合と dev の監査 |
+
+## runtime と packageManager
+
+```js
+export default defineConfig({
+  runtime: "node@24",
+  packageManager: "pnpm@10",
+  build: { runtime: "node@26" },
+  test: { runtime: "bun@1.4" },
+});
+```
+
+| キー | 名指すもの | 読むもの |
+| --- | --- | --- |
+| `runtime` | node / bun / deno | `uf start` `uf run` `uf exec`、および自分のキーがない全コマンド |
+| `build.runtime` | 同上 | `uf dev` `uf build` `uf preview`、`runtime` より先 |
+| `test.runtime` | 同上 | `uf test`、`test.runner` が連れてくるランタイムと `runtime` より先 |
+| `packageManager` | npm / pnpm / yarn / bun | パッケージ系コマンド、`pm.packageManager` とロックファイルより先 |
+
+| 書き方 | 意味 |
+| --- | --- |
+| `"node"` | PATH の node。持たないマシンは拒否 |
+| `"node@26"` | そのプレフィックスの最新。最初に必要としたときに解決され `uf.lock` に固定 |
+| `"node@26.8.2"` | 正確にそのリリース |
+| `"node@^26"`, `"node@>=24"` | **拒否。** 範囲は明日別のリリースに解決し得る |
+
+これらはコマンドのホストであり、デプロイアダプタではありません。Cloudflare Workers は `runtime.deploy.adapters` と `uf build --adapter edge` で届くもので、`test.runtime` の有効な値ではありません。
+
+## app
+
+| キー | デフォルト | 意味 |
+| --- | --- | --- |
+| `router.entry` | `"app.js"` | `routerView()` を export するモジュール |
+| `router.root` | `"app"` | ルートを走査するディレクトリ |
+| `router.enabled` | `true` | off にするとプロジェクトはライブラリになり、`uf build` はライブラリをビルドする |
+| `router.redirects` | `[]` | `{ source, destination, permanent }`。何よりも先に答え、最初のマッチが勝つ |
+| `router.rewrites` | `[]` | `{ source, destination }`。要求されたパスで destination のルートを配信 |
+| `router.headers` | `[]` | `{ source, headers }`。マッチした全ルールが適用される |
+| `router.basePath` | なし | アプリが配信されるパス（`"/docs"`）。外へのリクエストは 404 |
+| `router.trailingSlash` | `"ignore"` | `"never"` は `/about/` を `/about` へ、`"always"` は逆、`"ignore"` は両方に答える |
+| `runtime.default` | `"node"` | このプロジェクトが書かれた対象ランタイム |
+| `runtime.capabilityJsHost.default` | `"node"` | ツールキーが何も名指さないときにコマンドが起動するホスト。`uf build --compile` は何があってもこのキーからランタイムを埋め込む（#1036） |
+| `runtime.deploy.adapters` | 7 つすべて | このプロジェクトがビルドしてよいターゲット。ここから外すとそのターゲットが拒否される |
+| `react.strictMode` | `true` | `uf dev` は `<StrictMode>` 内でハイドレート。ビルドは決してしない |
+| `rsc` | `true` | `false` でルートは Server Components ではなくモジュールから描画される |
+| `rendering.modes` | `["ppr", "ssr", "ssg", "isr"]` | このプロジェクトがデプロイする描画戦略 |
+| `rendering.navigation` | `"client"` | リンクが何をするか。クライアントルーターが引き継ぐか、ブラウザがドキュメントを取得するか |
+| `rendering.staleTime` | `0` | クライアントルーターが取得済みページを尋ねずに見せる秒数 |
+| `rendering.cache.route`, `.fetch` | `false` | どのキャッシュが on か。`data` と `actions` は無視ではなく拒否 |
+| `rendering.cache.store` | `"memory"` | エントリの住む場所。1 プロセス、`"filesystem"`、`createCacheProvider` を export するモジュール |
+| `builtins.markdown` | on | Markdown と MDX。`mdx.highlight.themes` / `.langs` |
+| `builtins.fonts.subset` | `"none"` | `"ranges"` がファミリを script バケツに分割 |
+| `builtins.fonts.preload` | `true` | `Font` が主 face を preload するか。分割が何バケツ生んでもちょうど 1 face |
+| `builtins.icons.dir` | `"icons"` | `uf:icon/<name>` が `<name>.svg` を探す場所 |
+| `builtins.og.font` | なし | すべてのカードが描かれる書体。uf は 1 つも埋め込まない |
+| `builtins.images.widths` | `[640, 750, 828, 1080, 1200, 1440, 1920]` | 生成するバリアントの幅 |
+| `builtins.reactCompiler` | on | 公式 React Compiler |
+| `builtins.style` | `"style-x"` | スタイルエンジン |
+| `targets` | `["web", "react-native", "server"]` | ビルドが満たすべきアプリ / ランタイム面 |
+
+### rendering.modes
+
+| 値 | 意味 |
+| --- | --- |
+| `ssg` | パラメータなし、または `generateStaticParams` を持つルートをプリレンダリング |
+| `ssr` | リクエストごとに描画 |
+| `isr` | 寿命を宣言したプリレンダリング済みページをバックグラウンド再生成 |
+| `ppr` | 名前は予約されているが、まだ何も選ばない |
+| `csr` | **単独でのみ。** シングルページアプリ。他と混ぜると拒否される |
+
+## build
+
+| キー | 意味 |
+| --- | --- |
+| `build.runtime`, `build.builder` | 走るランタイムと、運転するビルダー（`"vite"` かモジュール） |
+| `build.outDir` | 出力ディレクトリ（デフォルト `dist`） |
+| `build.sourcemap` | ソースマップ |
+| `build.staticBuild` | `true` でサーバーを残さない。サーバーが必要なものはビルドエラーになる |
+| `build.lib` | ライブラリビルドの形 |
+
+## dev
+
+| キー | 意味 |
+| --- | --- |
+| `dev.port` | ポート（デフォルト 5173） |
+| `dev.host`, `dev.strictPort` | bind するアドレス |
+| `dev.allowedHosts` | **空だと `uf dev --host` が起動を拒否する。** allow-list のない 0.0.0.0 はソースツリーのファイルサーバー |
+| `dev.fs` | ファイルアクセス |
+
+## fmt と lint
+
+| キー | デフォルト | 意味 |
+| --- | --- | --- |
+| `fmt.lineWidth` | `100` | Prettier の 80 ではない |
+| `fmt.nonFlow.formatter` | Biome | JSON / CSS / TypeScript を誰が整形するか。`"none"` も。**名指ししたのにないフォーマッタは実行を失敗させる** |
+| `lint.rules` | — | ルール id からレベルへ。uf 自身のルール、Flow の組み込み lint、`react-compiler/*`、プロジェクトルール |
+
+## test
+
+| キー | 意味 |
+| --- | --- |
+| `test.runtime`, `test.runner` | 走るランタイムと、`"uf"` か `"bun@1.4"` |
+| `test.coverage` | 閾値と `exclude` |
+
+## env
+
+| キー | 意味 |
+| --- | --- |
+| `env.files` | カスケードを完全に置き換えるファイルのリスト。**プロジェクト内だけ**（絶対パス、`..`、`~`、外を指すシンボリックリンクは拒否） |
+| `env.active` | 通常のどれでもないデフォルトモード |
+| `env.toolchain` | **非推奨。** `runtime` / `build.runtime` / `test.runtime` / `packageManager` に分かれた |
+
+## pm
+
+| キー | 意味 |
+| --- | --- |
+| `pm.registry` | uf 自身の読み取りのレジストリ（マネージャのものは `.npmrc`） |
+| `pm.scopes` | スコープをレジストリに束縛。束縛されたスコープを別の場所から解決したロックファイルは拒否 |
+| `pm.provenance` | デフォルト `report`。npm attestation を読む |
+| `pm.allowLifecycleScripts` | `true` で、プロジェクト自身と依存の install 時スクリプトの拒否を一度に解く |
+
+## 非推奨キーの扱い
+
+古いキーとその置き換えは、同じことを言っている間は並んでいられます。**食い違うと、両方を名指しして設定が拒否されます。** どちらを意図したかは、優先順位で uf が答えてよい問いではないからです。
+
+```
+error: /app/uf.config.js: runtime is `node@26` and env.toolchain.node is `24.14.0` — two spellings of one tool that disagree, and uf does not pick one.
+```

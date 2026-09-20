@@ -1,0 +1,160 @@
+---
+title: "標準ライブラリ（@uniflowed/std）"
+description: "Go の標準ライブラリを基準に、JavaScript が持たない部分を Flow で。1 モジュール 1 export パス、なのでプログラムは import した分だけ払う。"
+section: "reference"
+order: 4
+source: "/reference/std"
+---
+
+```js
+// @flow
+import { as, is, wrap } from "@uniflowed/std/errors";
+import { Group } from "@uniflowed/std/sync";
+import { withTimeout, background } from "@uniflowed/std/context";
+
+const [ctx, cancel] = withTimeout(background(), 5_000);
+try {
+  const group = new Group({ limit: 8 });
+  for (const id of ids) group.go((signal) => fetchRow(id, signal));
+  return await group.wait();
+} catch (failure) {
+  if (is(failure, ctx.err())) return cached;
+  throw wrap("loading the dashboard", failure);
+} finally {
+  cancel();
+}
+```
+
+## 今日出荷されているもの
+
+20 モジュール。それぞれ別のサブパスなので、`@uniflowed/std/hex` の import は hex コーデックだけを連れてきます。
+
+| import | Go の名前 | 何か |
+| --- | --- | --- |
+| `@uniflowed/std/errors` | errors | `Error.cause` の上の `wrap` `is` `as` `join` `unwrap` `chain` |
+| `@uniflowed/std/sync` | sync, errgroup | `WaitGroup` `Mutex` `Semaphore` `once` `Group` |
+| `@uniflowed/std/context` | context | `AbortSignal` の上のキャンセル、デッドライン、型付きの値 |
+| `@uniflowed/std/bytes` | bytes | `Uint8Array` の検索・分割・結合、`Builder` |
+| `@uniflowed/std/heap` | container/heap | コンパレータ付きバイナリヒープ |
+| `@uniflowed/std/hex` | encoding/hex | `encode` `decode` `isValid` `dump` |
+| `@uniflowed/std/base32` | encoding/base32 | RFC 4648 |
+| `@uniflowed/std/slices` | sort.Search など | ソート済み配列への下限探索と挿入位置 |
+| `@uniflowed/std/list` | container/list | 安定した要素ハンドルを持つ双方向リスト |
+| `@uniflowed/std/csv` | encoding/csv | `split(",")` のバグなしの RFC 4180 |
+| `@uniflowed/std/binary` | encoding/binary | 検査付き `DataView` カーソルと Go 互換 varint |
+| `@uniflowed/std/path` | path/filepath | ホスト非依存のスラッシュパス操作 |
+| `@uniflowed/std/glob` | path/filepath | `*` `?` 文字クラス、再帰 `**` |
+| `@uniflowed/std/hash` | hash/crc32 など | チェックサムと非暗号ハッシュ |
+| `@uniflowed/std/time` | time | Duration 演算とキャンセル可能な `Timer` `Ticker` `afterFunc` |
+| `@uniflowed/std/io` | io | バイトの Reader/Writer、`copy` `readAll` `limitReader`、Web Stream アダプタ |
+| `@uniflowed/std/bufio` | bufio | バッファ読み込みと `Scanner` |
+| `@uniflowed/std/textproto` | net/textproto | 正規キー・繰り返し値・折り返し行を持つ MIME ヘッダ |
+| `@uniflowed/std/zip` | archive/zip | 中央ディレクトリの読み書き |
+| `@uniflowed/std/tar` | archive/tar | ustar の読み書き |
+
+ルートの `@uniflowed/std` は変わりません。関数が `NativeRuntimeRequiredError` を raise する宣言面であり、この 20 とは別のものです。**上のすべては動きます。**
+
+## 型が要点
+
+ここのすべてのジェネリックは呼び出し側で推論され、注釈も裏の `any` もありません。主張ではなくテストされています（`tests/type-tests/std-inference.js` は意図的な誤用のファイルで、`uf check` はそのすべてを報告しなければならず、それ以外は報告してはなりません）。
+
+```js
+const queue = new Heap((a, b) => a.due - b.due);   // コンパレータから Heap<Job>
+const next = queue.pop();                          // Job | void
+
+const TRACE = key<string>("trace-id");
+withValue(ctx, TRACE, 7);                          // 拒否: 7 は string ではない
+traced.value(TRACE);                               // string | void
+
+as(failure, HttpError)?.status;                    // クラスだけから number
+```
+
+## キャンセル: なぜ AbortSignal だけではないのか
+
+すべての context は 1 つ持ちます（`ctx.signal()` が `fetch` に渡すもの）。だから競合ではなくプラットフォームと合成されます。足すのは AbortSignal が持たない 3 つです。**ツリー**（リクエストのキャンセルがそれが始めたすべてをキャンセルする）、**短くなる一方のデッドライン**（ライブラリが呼び出し側が許したより多くの時間を自分に買えない）、**型付きのリクエストスコープの値**。
+
+Go が求めないことを 1 つ求めます。デッドラインは `setTimeout` で、Node では pending なタイマーがプロセスを生かします。ランタイム非依存の `unref` はない（Deno とブラウザにない）ので、`withTimeout` が返す `cancel` は成功パスでも `finally` で呼ばれなければなりません。
+
+## どこで走るか
+
+すべて Web プラットフォーム（`Uint8Array`、`TextEncoder`/`TextDecoder`、`AbortController`、`Promise`、`setTimeout`）の上の素の Flow です。`node:` の import も、ネイティブバインディングも、`Buffer` もありません。
+
+| ホスト | 状態 | どう確立したか |
+| --- | --- | --- |
+| Node.js | 動く | `packages/std/std.test.js`、出荷する全モジュールに対して |
+| Bun 1.3.13 | 動く | 最初の 6 つに対する 18 のスモークアサーション、手動 |
+| Deno | **期待** | 走らせていない。API 面からの推論 |
+| Edge / workers | **期待** | 同じ |
+
+下の 2 行が意図的に「yes」ではなく「期待」なのが、`docs/hosts.md` が存在する理由の区別です。**ランタイムを起動したものが何もない行は、結果ではなく主張です。**
+
+## なぜ Rust ではなく JavaScript か
+
+uf はネイティブツールチェーンなので、「これはネイティブであるべきか」はすべてのモジュールに対する正当な問いです。推測ではなく計測され、**これらのモジュールについての答えは no** です。
+
+比較対象は Node 自身の C++ 実装（`Buffer#toString("hex")` など）で、バインディングが使うのと同じ種類の JavaScript-ネイティブ境界を越えて届きます。Node 24、M 系ラップトップ、1 呼び出しあたりナノ秒:
+
+| 操作 | サイズ | JS のこれ | Node のネイティブ | ネイティブは |
+| --- | --- | --- | --- | --- |
+| `hex.encode` | 16 B | 83 ns | 40 ns | 2.1 倍速い |
+| `hex.encode` | 1 MiB | 1.69 ms | 0.26 ms | 6.5 倍速い |
+| `bytes.equal` | 16 B | 14 ns | 25 ns | **1.8 倍遅い** |
+| `bytes.equal` | 64 B | 59 ns | 30 ns | 2.0 倍速い |
+| `bytes.equal` | 1 MiB | 0.89 ms | 0.02 ms | 42 倍速い |
+| `bytes.indexOf` | 1 MiB | 332 µs | 21 µs | 16 倍速い |
+
+この表から 3 つが従い、速度についてなのは 3 つ目だけです。
+
+1. **境界はタダではなく、数十バイト以下では請求書のすべて。** 16 バイトの `bytes.equal` は、同じことをするネイティブ呼び出しより JavaScript の方が速い。16 バイトの比較は C++ に入るより短時間だから。ほとんどの関数へのほとんどの呼び出しは小さい（32 バイトのダイジェスト、4 バイトの区切り、ヘッダの値）。
+2. **そもそも越えるバインディングがない。** このリポジトリに N-API も WebAssembly クレートもありません。`@uniflowed/std` にとっての「ネイティブ」はビルドフラグではなく、まだ存在しない層です。
+3. **ネイティブモジュールはランタイム非依存でない。** N-API アドオンは Node と Bun で動き Deno とエッジで動かず、それはレッドライン 6。WebAssembly モジュールはどこでも動きますが引数を境界越しにコピーし、引数がバイトバッファの関数にとって、それはネイティブ実装が節約するはずだったコストです。
+
+だから労力は計測できる方へ行きました。どれも同じ関数の 1 実装対もう 1 つ、両方 JavaScript です。
+
+| 変更 | 効果 |
+| --- | --- |
+| 128 B 超で ASCII バイトを書き 1 回デコードする `hex.encode` | 43 MB/s → 620 MB/s |
+| 128 B 未満で文字列に追加する `hex.encode` | 32 B ダイジェストで 520 ns → 150 ns |
+| 最初のバイトをネイティブに走査する `bytes.indexOf` | 素朴な二重ループの 8〜10 倍 |
+| チャンクごとに再確保する代わりの `bytes.Builder` | 100 チャンクで 11 倍、10,000 で 825 倍 |
+| 挿入ごとにソートする代わりの `heap` | 1,000 項目で 161 倍、10,000 で 507 倍 |
+
+**最後の 2 つはマイクロ最適化ではありません。** 線形と二次の差であり、ステージングでは問題なく本番で倒れるサービスとの差です。
+
+## Go の標準ライブラリの地図
+
+すべてが 3 つのどれかに着地し、地図全体を書く意味は**2 番目のバケツだけが仕事**だということです。
+
+### すでに JavaScript にある — 再実装しない
+
+`strings` → `String.prototype` と `Intl.Segmenter`。`strconv` → `Number` など。`math` / `math/rand` → `Math`、`crypto.getRandomValues`。`sort` / `slices` → `Array.prototype.sort`（ES2019 から安定）。`encoding/json` → `JSON`。`encoding/base64` → `atob`/`btoa`。`regexp` → `RegExp`（**別のエンジン**。Go は RE2 でバックトラックできず JavaScript はできるので、移植は構文だけでなく計算量クラスを変えてしまう）。`net/url` → `URL`。`time` の時計・整形・パース → `Date`、`Intl.DateTimeFormat`、`Temporal`。`crypto/*` → WebCrypto。`compress/gzip` → `CompressionStream`。`net/http` → `fetch` と `@uniflowed/server`。`testing` → `@uniflowed/test`。
+
+`errors` と `context` は部分的にここに属し、まさにそれが最初だった理由です。`Error.cause` と `AbortSignal` がプラットフォームの答えで、どちらもチェーンやスコープのツリーの reader を持ちません。出荷された 2 モジュールは置き換えるのではなくその上に組まれています。
+
+### 欠けていて、持つ価値がある
+
+このページ上部の最初の 6 つが第 1 陣。`slices` `base32` `list` `csv` `binary` `path` `glob` `hash` `time` `io` `bufio` `textproto` `zip` `tar` が次の陣の最初の部品です。
+
+`sync.RWMutex` は保留ではなく**意図的に不在**です。1 つのランタイムで reader と writer は同時に走れないので、公平性ポリシーだけを買うことになり、それを必要とするワークロードと共に来るべきです。
+
+### このパッケージが書くものではない
+
+それぞれ同じテストに落ちます。`@uniflowed/std` のモジュールは Node / Bun / Deno / エッジで動くか、どこで動かないかを正確に言わなければなりません。
+
+| Go | なぜ違うか |
+| --- | --- |
+| `syscall` `runtime` `unsafe` `reflect` `plugin` `go/*` | どのホストも公開しておらず、3 つはこれではないコンパイラを記述している |
+| 生 TCP / UDP / DNS の `net` | ランタイムごとに互換性のないソケットがあり workerd は持たない。ファイルシステムと同じくホスト能力の後ろに属する |
+| `os` `os/exec` `os/signal` `os/user` | 同じ。`@uniflowed/std/fs` は std モジュールではなく能力の継ぎ目 |
+| `crypto/tls` `crypto/x509` | ホストが TLS スタックを所有する |
+| `image/*` `html/template` `text/template` | エコシステムに答えがあり、uf のリリースより速く動く。テンプレートエンジンの所有はレッドライン 5 に余計な手順を付けたもの |
+| `sync/atomic` | Atomics には SharedArrayBuffer が要り、それなしにはシングルスレッドで atomic にするものがない |
+| `math/big` | BigInt が整数をカバー。`big.Float` と `big.Rat` は本物のギャップで、標準ライブラリではなくライブラリ |
+
+## 地図が古くならない場所
+
+ここではありません。このページは読みやすい半分で、検査される半分は `crates/uf_std/src/registry.rs` です。すべての `@uniflowed/std/*` 指定子が状態（`ships` `declared` `planned` `declined`）を持ち、`uf inspect --json` が `stdModules` の下に出します。
+
+そのフィールドが存在するのは、以前の表にそれがなく、**それがないテーブルはどう書かれていても在庫として読まれる**からです。以前は 45 の指定子を名指し、うち 44 にファイルがなく、すべてが `nativeBinding: true` と `wintertcAligned: true` をハードコードする関数で構築されていました。だから出荷済みの純 JavaScript モジュールを、それについて嘘をつかずに記述できず、`TcpListener` を export リストに持ちながら `@uniflowed/std/net` を WinterTC 準拠と記述していました。
+
+今は 4 つのテストが状態を `packages/std` に対して保持しています。

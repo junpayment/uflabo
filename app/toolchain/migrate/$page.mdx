@@ -1,0 +1,283 @@
+---
+title: "既存アプリの移行"
+description: "create-react-app から、Vite + React から、Next.js から。そのまま持ち越せるもの、手順、移行後も残る差分。uf migrate コマンドはまだないので（#970）、すべて手作業。"
+section: "toolchain"
+order: 10
+source: "/guide/migrate"
+---
+
+import { Callout } from "../../_design/Callout.js";
+import { Figure } from "../../_design/Figure.js";
+
+## 始める前の 4 つの問い
+
+ファイルを 1 つも変換する前に答えてください。移行が 1 週間の作業か、まだ不可能かを決めます。
+
+**TypeScript か。** uf は `.js` `.jsx` `.mjs` `.cjs` を変換します。`uf check` は `.ts` / `.tsx` を読まず、その import は `any` で、ルーターに `$page.ts` はありません。移行とは「uf を tsc の横に足す」ことではなく**アプリを変換すること**です。
+
+**依存は何を宣言しているか。** `uf check` は Flow を出荷するパッケージを型付けし、TypeScript 宣言（自身か `@types`）を出荷するパッケージを Flow 翻訳で型付けします。翻訳が言えないものは `any` で、レポートはパッケージごとに数えます。どちらもないパッケージは `any` で名指しされます。
+
+**どこにデプロイするか。** `uf build --adapter` は node / bun / deno / container / edge / serverless / static の 7 つを書きます。**どのサーバーターゲットも uf 自身のパイプラインで実プラットフォームにデプロイされていません**（#956）。serverless はストリームされたレスポンスをバッファし、Vercel と Netlify のアダプタはありません。静的ホストはルートハンドラもミドルウェアもサーバーアクションも動かせず、それらを持つビルドは穴を空けてアップロードされるのではなく拒否されます。
+
+**必要なパッケージは npm にあるか。** `@uniflowed/config` `react` `router` `server` `test` `react-testing` `vite` はあります。`@uniflowed/web`（`Image`、`Font`、OG カード）はまだのものの 1 つです。
+
+## すべての移行に共通するもの
+
+### 移行先の形
+
+```sh
+uf new ../my-app-uf
+```
+
+アプリの隣のディレクトリに 9 ファイルを書き、それ以外は何も書きません。**先に作ってください。** 以下のすべての手順の対象です。
+
+| 持っているもの | uf では |
+| --- | --- |
+| `babel.config.js`、`@babel/preset-flow`、構文プラグイン | **なし** — Flow はバイナリの中で JavaScript に届く |
+| `tsconfig.json` | **なし** — 型システムは Flow で、uf が設定する |
+| `.prettierrc` | `uf.config.js` の `fmt`。`lineWidth` はデフォルト 80 ではなく 100 |
+| `.eslintrc`, `eslint.config.js` | `uf.config.js` の `lint.rules`。[ESLint からの対応表](/toolchain/fmt-lint#eslint-から来る人へ) |
+| `jest.config.js`, `vitest.config.ts` | `uf.config.js` の `test`、ほとんどのスイートでは何も要らない |
+| `vite.config.ts` | `uf.config.js`。uf が意見を持たないものは `vite` キーに |
+| `package.json` の `scripts` | `uf.config.js` の `tasks` |
+| `index.html` | ルートレイアウト `app/$layout.js`（`<html>` を描画するコンポーネント） |
+| `.nvmrc`, `.tool-versions` | `uf.config.js` の `runtime` |
+
+`uf install` は `package.json` の script を走らせません。`start` や `test` のような script にはそう言い、パッケージマネージャがインストール中に自分で走らせるもの（`postinstall`、`prepare` などのライフサイクルフック）を宣言する manifest は、何かを取得する前に拒否します。
+
+### ツールを宣言する
+
+<Figure title="uf.config.js">
+
+```js
+// @flow
+import { defineConfig } from "@uniflowed/config";
+
+export default defineConfig({
+  runtime: "node@24",
+  packageManager: "pnpm@10",
+  build: { runtime: "node@24", builder: "vite" },
+  test: { runtime: "node@24", runner: "uf" },
+  tasks: {
+    dev: { command: "uf dev" },
+    build: { command: "uf build" },
+    check: { command: "uf check" },
+    lint: { command: "uf lint" },
+    fmt: { command: "uf fmt" },
+    test: { command: "uf test" },
+  },
+});
+```
+
+</Figure>
+
+`"node@24"` は最新の 24.x で、最初に必要としたコマンドが解決し `uf.lock` に固定し、マシン共有のストアに入れます。**`uf.lock` をコミットしてください。** これらのキーを 1 つも書かないプロジェクトは、見つけた node とロックファイルが名指すマネージャで、以前と同じように動きます。
+
+### そのまま持ち越せるもの
+
+- **React 自体。** React 19、同じ hook、同じレンダリングモデル、同じ `react` / `react-dom`。`@uniflowed/react` は `react` を名前で再 export するので、`import { useState } from "react"` は同じモジュールに届きます。uf の lint は素の関数コンポーネントや hook に警告して `component` / `hook` 宣言を求め、React Compiler はすでに走っています。
+- **`.js` 内の JSX。** Flow のパーサーが読むので、`.jsx` にリネームするものはありません。
+- **CSS。** 素の import、`.module.css`、Vite がサポートするプリプロセッサ。
+- **`public/`。** ルートから配信され、そのままビルドにコピー。
+- **`.env` ファイル。** 同じ 4 つが同じ順で読まれます。ブラウザに届くものは変わります。
+- **Vite プラグイン。** `plugins` は普通の Vite プラグインのリストで、uf 自身のものに追加されます。
+- **実行時の依存。** 変わるのはチェッカーがそれらについて見えるものです。
+
+### 型を変換する
+
+`.ts` / `.tsx` を `.js` にリネームします。`// @flow` は省略可能で、`uf check` は `// @noflow` と言わないすべてのファイルをチェックします。uf は Flow を TypeScript 構文オンで走らせるので、TypeScript ファイルの多くはすでに Flow です。
+
+| TypeScript | uf check の下では |
+| --- | --- |
+| `readonly x: T`, `ReadonlyArray<T>` | そのまま |
+| `unknown`, `never`, `undefined`（型として） | そのまま（Flow の `mixed` `empty` `void` として読まれる） |
+| `x as T`, `as const` | そのまま。Flow が受け付ける唯一のキャスト構文 |
+| `<T extends Bound>` | そのまま。Flow の古い `<T: Bound>` はエラー |
+| `keyof`, `Partial`, `Pick`, `Omit`, `Record`, `ReturnType` など | そのまま |
+| conditional / mapped type | そのまま |
+| コンポーネント用の `interface Props { … }` | `component` 宣言の引数リスト |
+| `React.FC<Props>`、JSX を返す関数 | `component` |
+| カスタム hook | `hook useThing(…)`。hook のルールが型で検査される |
+| オブジェクト型 | デフォルトで exact。追加を許すなら `{ …, ... }` |
+| `enum` | Flow enum（実行時を持つ値） |
+| `default: never` つき `switch` | `match`（構成上網羅的） |
+| 自分で書いた `.d.ts` | `flow-typed/` 下のライブラリ定義（設定不要） |
+
+TypeScript に対応物のないルールが 1 つ。**import も export もないファイルはスクリプトとして読まれ**、そこでは `await` が普通の識別子なので、トップレベル `await` は拒否されます。`export {}` を 1 行足せばモジュールになります。
+
+---
+
+## create-react-app から
+
+3 つの中で最短です。CRA アプリはクライアント描画のバンドルで、それは uf がビルドする形だから。
+
+**持ち越せるもの:** コンポーネント、その hook、CSS、`public/`。Jest スイートの形（`describe` `it` `expect`、スナップショット）と `@testing-library/jest-dom` が足すマッチャー（`expect` に内蔵）。React Testing Library の `render` `screen` `within` `fireEvent` `userEvent` `waitFor`（`@uniflowed/react-testing` から）。
+
+**手順:**
+
+1. **プロジェクトを作りソースをコピー。** `uf new ../my-app-uf`、次に `src/` `public/` と `.env` をコピー。
+2. **`package.json` のツール部分を置き換える。** スキャフォールドの `package.json`（`@uniflowed/config` `react` `router` `vite` + `react` / `react-dom` + `@uniflowed/test`）に自分の依存を足します。`react-scripts`、`eslintConfig`、`scripts` ブロックは来ません。
+3. **`uf.config.js` を書く**（上の形）。
+4. **`public/index.html` を `app/$layout.js` にする。** `<html lang>`、`<body>`、`<head>` の中身がコンポーネントに移り、`<title>` と description は `metadata` に。`<div id="root">` は消えます（uf はドキュメント全体を描画するので）。`%PUBLIC_URL%` も（`public/` のファイルは `/` にあるので）。
+5. **`src/index.js` を消す。** スキャフォールドの `app.js` がエントリで、`createRoot` を呼ぶものは何もありません。
+6. **各ルートを `app/` 下のディレクトリにする。** `<Route path="/users/:id">` は `app/users/[id]/$page.js` でパラメータは prop として届き、`path="*"` は `app/$not-found.js`。`<Link to>` は同じ `to` の `Link`、`useNavigate()` は `useRouter().push`、`useParams()` / `useLocation()` は `useRoute()` の `params` / `pathname` / `searchParams`。**React Router を保つサポートされた方法はありません。** client component にしても `uf build` 中にプリレンダリングされ `document is not defined` で失敗するので、ルーターをネストせず移してください。
+7. **ブラウザに届くものをリネーム。** `process.env.REACT_APP_API` は `import.meta.env.REACT_APP_API` になり、`vite: { envPrefix: "REACT_APP_" }` が要ります。または `VITE_API` にリネーム。
+8. **SVG。** コンポーネントとして保つなら `vite-plugin-svgr` を `plugins` に、またはアイコンを `uf:icon/…` へ。
+9. **テストを移す**（下の表）。
+10. **ESLint ルールを対応させ**、残すものを `lint.rules` に書く。
+11. **型を変換**（あれば）。JavaScript プロジェクトもチェックされるので、注釈のないコードについて `uf check` が言うことがあると想定してください。
+12. **ループを回す:** `uf fmt`、`uf lint`、`uf check`、`uf test`、それから `uf build` と `uf preview`。
+
+<Figure title="app/users/[id]/$page.js">
+
+```js
+// @flow
+// 以前: <Route path="/users/:id" element={<User />} />
+import * as React from "@uniflowed/react";
+import { Link } from "@uniflowed/router";
+
+export component Page(params: {| readonly id: string |}) {
+  return (
+    <main>
+      <h1>User {params.id}</h1>
+      <Link to="/users">All users</Link>
+    </main>
+  );
+}
+```
+
+</Figure>
+
+<Callout kind="note" title="検証済み">
+この経路は uf 0.0.0-alpha.40 で、CRA 5.1.0 + React Router 6.30.2 + `REACT_APP_` 変数 + React Testing Library のアプリからエンドツーエンドで検証されています。uf 側は `uf install` `uf fmt --check` `uf check` `uf test` `uf build` をすべて通過。
+</Callout>
+
+### テストを移す
+
+| Jest / Vitest | uf test |
+| --- | --- |
+| import なしのグローバル、`jest` / `@jest/globals` / `vitest` からの import | `import { describe, expect, it, uft } from "@uniflowed/test"`。別ランナーを import するファイルは報告され実行を失敗させる |
+| `jest.fn()`, `vi.fn()` | `uft.fn()` |
+| `jest.spyOn`, `vi.spyOn` | `uft.spyOn` |
+| `jest.useFakeTimers()`, `vi.useFakeTimers()` | `uft.useFakeTimers()`（`advanceTimersByTime` `runAllTimers` `setSystemTime` つき） |
+| `vi.stubEnv`, `vi.stubGlobal` | `uft.stubEnv`, `uft.stubGlobal` |
+| `jest.mock(path)`, `vi.mock(path)` | `await uft.mock(path, factory)` の後 `await import(path)`。**hoist されず**、Node か Deno 2.8+ のみ |
+| `@testing-library/react` | `@uniflowed/react-testing`（最初の render で happy-dom を入れる） |
+| `toMatchSnapshot()`, `-u` | `toMatchSnapshot()`, `uf test -u` |
+| `import.meta.vitest` | `import.meta.uf.test` |
+| カバレッジプロバイダと閾値 | `uf test --coverage` と `uf.config.js` の `test.coverage` |
+| `testMatch`, `include` | **何もなし** — テストを宣言するファイルがテストファイル |
+
+ルートコンポーネントが `Link` やルーター hook を import するなら、ルーターコンテキスト付きで描画するか、素の UI を子コンポーネントに移してそれをテストしてください。
+
+### デプロイ
+
+CRA のビルドは 1 つの `index.html` とバンドルでした。`app.rendering.modes: ["csr"]` が同じ形です。`uf build` はシェルを `index.html` と `404.html` として書き、ブラウザが全ルートを描画します。デフォルトのままにすればできるルートをすべてプリレンダリングし、静的ホストがそれをドキュメントとして配信します。
+
+### 移行後も違うもの
+
+- **mock は hoist されない。** ファイルのどこかの `jest.mock` は、それに届く `await import(…)` の**上**の `uft.mock` になります。
+- ESLint プラグインの一部ルールにまだ答えがない: React（#1062）、hooks / exhaustive-deps（#1063）、jsx-a11y（#1064）、import（#1065）。
+- **アドレスが動く。** `uf dev` は 5173 で待ち受け、ビルドは `build/` ではなく `dist/`。
+
+---
+
+## Vite + React から
+
+すでに uf が運転するバンドラの上にいるので（`@uniflowed/vite` は `vite: "^8.2.2"` に依存）、機構は小さく、TypeScript のコードベースなら型変換が仕事のすべてです。
+
+**持ち越せるもの:** Vite 自体と全プラグイン。Vite のオプション（`vite` キーの下）。`import.meta.env`、`VITE_` プレフィックス、`.env` ファイル。`import.meta.glob`、`?raw`、`?url`、`?worker`、アセット import（`uf check` が宣言）。`public/`、CSS Modules、プリプロセッサ。
+
+**手順:**
+
+1. **`vite.config.ts` を `uf.config.js` にする。** `server.port` / `host` / `strictPort` / `allowedHosts` / `fs` は `dev.*`、`build.outDir` と `build.sourcemap` は `build` の下で同名、`plugins` は `plugins` のまま。それ以外（`resolve.alias`、`build.target`、`define`）は `vite` の下にそのまま（オブジェクトはキー単位でマージ、配列は置換）。dev サーバーの proxy もそこ（`vite: { server: { proxy } }`）で、`dev` の下ではありません。
+2. **`index.html` を `app/$layout.js` にする。** uf の下で Vite は `appType: "custom"` で走るので、フォールバックする HTML エントリはなく、ドキュメントがレイアウトです。
+3. **エントリをルートにする。** `src/main.tsx` は消え、`app.js` がエントリ、`app/` 下のページが `/` を描画します。
+4. **ツールのキーを `uf.config.js` に書く。**
+5. **型を変換する。**
+6. **Vitest からテストを移す**（同じ表）。`uf test --browser` が uf のブラウザモード。
+7. **HMR のガードを書き直す。** `if (import.meta.hot) { … }` は `uf check` のエラーです。`import.meta.hot?.accept()` と書きます（`uf lint --fix-unsafe` がやってくれます）。
+8. **`vite preview` を `uf preview` に。** 以前と同じ 4173 で、静的プレビューにはできないルートハンドラとリクエストごとの描画を配信します。
+
+<Callout kind="note" title="検証済み">
+uf 0.0.0-alpha.40 で、create-vite@9.2.1 の React アプリ（Vite 8.3.0、React 19.2.8、`@vitejs/plugin-react`、Vitest 5.0.1、`server.proxy`、`VITE_` 変数）からエンドツーエンドで検証。必要だった小さな移動は 2 つ。ルートを直接 import するテストは CSS のない子コンポーネントを描画すべきこと、Vite の画像 import はサーバーのプリレンダリングがアセットオブジェクトを見るとき `src` を読む必要があるかもしれないこと。
+</Callout>
+
+**まだ違うもの:** Vite のバージョンは uf のものです（別のものが必要なプロジェクトは `build.builder` に自前のビルダーモジュールを名指します）。`assetsInclude` に足した拡張子は `uf check` が読まないので、その種の import は `any` です。
+
+---
+
+## Next.js から
+
+規約はよく揃っていて、App Router アプリがすることのほとんどに対応物があります。ないものは下に列挙され、uf のデプロイ実績がまだ持たないものも同様です。
+
+### そのまま持ち越せるもの
+
+| Next.js | uf |
+| --- | --- |
+| `app/page.tsx`, `app/layout.tsx` | `app/$page.js`, `app/$layout.js` |
+| `app/[slug]/`, `app/[...rest]/`, `app/(group)/` | 同じディレクトリ。パラメータは props として届く |
+| `loading.tsx` | `$loading.js` — セグメントごとの `<Suspense>` 境界 |
+| `error.tsx` | `$error.js`（`"use client"` モジュール）。401 / 403 / 500 が `RouteError` のケースとして 1 ファイルに |
+| `not-found.tsx`, `template.tsx`, `default.tsx` | `$not-found.js`, `$template.js`, `$default.js` |
+| `@slot/`, `(.)folder/` | `@slot/` と、描画先のスロット内の `@slot/(.)folder/` |
+| `route.ts` | `$route.js` — Request in、Response out |
+| `middleware.ts` | ガードするディレクトリ内の `$middleware.js` |
+| `NextResponse.rewrite(url)` | `@uniflowed/router/middleware` の `rewrite(url)` |
+| `next.config.js` の `redirects()` `rewrites()` `headers()` | `uf.config.js` の `app.router.*` |
+| `basePath`, `trailingSlash` | `app.router.basePath` と `trailingSlash`。Next.js の `false` は `"never"`、`true` は `"always"`、uf 自身のデフォルトは両方の綴りに答える `"ignore"` |
+| Server Components, `"use client"` | 同じ |
+| `"use server"` モジュール | 同じ |
+| `generateStaticParams`, `metadata` | 同じ名前 |
+| `export const dynamic = "force-dynamic"` | 同じ。`"force-static"` と `"error"` は拒否 |
+| `redirect`, `permanentRedirect`, `notFound`, `unauthorized`, `forbidden` | 同じ名前、`@uniflowed/router` から |
+| `useRouter()` | `@uniflowed/router` の `useRouter()` |
+| `usePathname()`, `useSearchParams()`, `useParams()` | `useRoute()` の `pathname` / `searchParams` / `params` |
+| `next/link` | `@uniflowed/router` の `Link`（`href` ではなく `to`） |
+| `cookies()`, `headers()`, `draftMode()`, `after()` | 同じ名前、`@uniflowed/server` から |
+| `revalidatePath`, `revalidateTag` | 同じ名前、`@uniflowed/server/cache` から |
+| `next start` | `uf start` |
+| `output: 'standalone'` | `uf build --adapter node` / `container` / `--compile` |
+| `output: 'export'` | `build: { staticBuild: true }` か `--adapter static` |
+
+### 手順
+
+1. **プロジェクトを作り `app/` を移す。** `page.tsx` → `$page.js`、`layout.tsx` → `$layout.js`、以下表の通り。ルートコンポーネントは名前で export（`export component Page`）。各 `$error.js` の先頭に `"use client"` を。
+2. **`next.config.js` を置き換える。** `output` は上の最後の 2 行、`images` は `app.builtins.images`。`redirects()` などはデータとして書かれた `app.router.*` に（ルールの `headers` は `{ key, value }` のリストではなくオブジェクト）。別オリジンへの rewrite はそれを fetch するルートハンドラ、`has` / `missing` 条件は `rewrite()` か `Response.redirect` を返すミドルウェアです。
+3. **import を対応表で変える。** `next/navigation` → `@uniflowed/router`、`next/headers` と `next/server` → `@uniflowed/server`、`next/cache` → `@uniflowed/server/cache`、`next/dynamic` → React の `lazy`。`$route.js` では JSON を `Response` として返してください。Flow の DOM ライブラリはまだ `Response.json()` を公開していません。
+4. **データ取得を loader に移す。** ページやレイアウトが `loader` を export し、描画前に走ってデータを渡します。戻り値に残した promise は `<Suspense>` の後ろでストリームします。**ページコンポーネント自体を async にしないでください。** `uf check` は async の component 構文を拒否するので、await が必要なデータは loader に属します。
+5. **`middleware.ts` をディレクトリで分ける。** matcher はありません。`$middleware.js` は自分のいるディレクトリをガードし、レイアウトと同じようにツリーを下って合成されます。`NextResponse.next()` は「何も返さない」です。
+6. **キャッシュを言い直す。** `app.rendering.cache.route` をオンにし、描画の中から `cacheLife({ revalidate: 60 })` と `cacheTag("posts")` を呼びます。`export const revalidate` は読まれません。
+7. **ブラウザに届くものをリネーム。** `NEXT_PUBLIC_API` は `VITE_API` になるか、`vite: { envPrefix: "NEXT_PUBLIC_" }` で名前を保ちます。
+8. **コンポーネントを差し替える。** `next/image` とローカルの `next/font` は `@uniflowed/web` の `Image` と `Font`（import したファイルを渡す）、`opengraph-image` は `*.og.json` テンプレート。`sitemap.xml` と `robots.txt` は `site.url` を設定すれば `uf build` が書きます。
+9. **テストを同じ表で移す。**
+10. **ターゲットを選ぶ。** `uf build` がサーバーを必要とする全ルートを **answered by a server** の下に列挙します。
+
+<Callout kind="note" title="検証済み">
+uf 0.0.0-alpha.40 で、loader 付きのページ、`$route.js` ハンドラ、ディレクトリ `$middleware.js` を持つ App Router 形のフィクスチャからエンドツーエンドで検証。ビルドは `/api/status` と `/admin/*` を answered by a server に名指し、`/admin` のガードを報告しました。
+</Callout>
+
+### 移行後も違うもの
+
+- **デプロイ実績。** どのサーバーアダプタの出力も uf 自身のパイプラインでプラットフォームにデプロイされていません（#956）。Vercel と Netlify のアダプタはありません。
+- **サーバー関数。** client component に prop として渡すサーバー関数、インライン `"use server"` クロージャ、ファイルアップロード、ハイドレーション前に送信されるフォームは動きません。
+- **RSC 下のインターセプトルート。** インターセプトされた URL は、それが名指すページへの普通のナビゲーションです（#1038）。スロットは `$not-found.js` / `$route.js` / `$middleware.js` を持てません（#267）。
+- **ISR の残り。** `--compile` バイナリはキャッシュを持たず、関数レベルのキャッシュも `"use cache"` もなく（#961）、`ppr` モード名はまだ何も選びません。
+- **ミドルウェアとリクエスト API。** rewrite はパスを変えリクエストのヘッダは決して変えず、ミドルウェアも設定ルールも別オリジンへ proxy せず、`cookies()` は書かずに読みます。
+- **画像とフォント。** ビルド時のリサイズのみ、AVIF も lossy WebP もなし（#997）、リモート画像もリクエスト時の最適化もなし。フォントはプロバイダからダウンロードされるのではなく、import したファイルからセルフホストされます。
+- **対応物のないファイル:** `global-error.tsx`、`instrumentation.ts`、icon と manifest の規約。
+
+---
+
+## 自分の移行を見積もる
+
+上で計測された経路は意図的に小さいので、目の前のアプリにはこの算術を使ってください。今日数えられる 4 つの数です。
+
+1. **変換するモジュール数。** 機械的で、ほとんどは上の表。
+2. **`uf check` がまだ `any` として型付けする import 数。** 葉のディレクトリを 1 つ変換し、`uf install` と `uf check` を走らせ、レポート末尾のリストを読む。TypeScript 宣言から型付けされたパッケージについては、翻訳が言えなかった量も。
+3. **hoist された mock や別ランナーのグローバルに寄りかかったテスト数。** それぞれ mock を、影響する import の上に移す。
+4. **サーバーを必要とするルート数**と、デプロイ先の対比。`uf build` が名指しします。
+
+**2 番目の数が、型システムが元を取るかどうかを決めます。** あなたのコードベースにとっての本当の変換レートでもあり、このページが主張できるどんな数字にも勝ちます。
+
+答えが「まだ」になったなら、それはサポートされた答えです。[uf がやらないこと](/why/not-do) のリストが存在するのはそのためです。

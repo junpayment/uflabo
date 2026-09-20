@@ -1,0 +1,81 @@
+---
+title: "用語集"
+description: "uf のドキュメントに頻出する用語を、日本語の訳語と一緒に整理。"
+section: "intro"
+order: 2
+---
+
+このサイトで使う訳語と、原文（英語）の対応表です。コマンド名・設定キー・ファイル名は翻訳せず原文のまま使います。
+
+## uf 固有の概念
+
+| 原文 | このサイトの表記 | 意味 |
+| --- | --- | --- |
+| uf, Uniflowed | uf | ツールチェーン本体。バイナリ名も `uf` |
+| `ufr` / `ufx` | そのまま | `uf run` / `uf exec` の短い別名バイナリ |
+| JavaScript host | JavaScript ホスト | Vite やテスト本体を実行する Node.js / Bun / Deno |
+| Capability JS Host | そのまま | 設定キー `app.runtime.capabilityJsHost` が指すホスト |
+| refusal | 拒否 | 意図的に「やらない」と決めたこと。理由が `docs/red-lines.md` に書かれ、issue で閉じることはない |
+| gap | 未実装 | まだできていないこと。必ず issue 番号が付く |
+| red line | レッドライン | uf が自分に課している設計上の禁止事項 |
+| provider | プロバイダ | ある段階を実際に実行するもの（Vite、Biome、Flow など）。`uf explain` が名前を出す |
+| route table | ルートテーブル | `app/` 配下のファイルから決まるルート一覧 |
+| the shell | シェル | ストリーミング時に最初に送られる、レイアウトとフォールバックだけの HTML |
+| Flight payload | Flight ペイロード | React Server Components がツリーを表現する形式。`<route>/__uf.flight` で取得 |
+| owned component | 所有コンポーネント | `uf ui add` でリポジトリにコピーされる、スタイル付きの UI 部品 |
+| headless | ヘッドレス | 見た目を持たず、ロール・キーボード・ARIA だけを提供する部品 |
+
+## ルーティング
+
+| 原文 | 表記 | 意味 |
+| --- | --- | --- |
+| page | ページ | `$page.js`。あるパスで描画されるコンポーネント |
+| layout | レイアウト | `$layout.js`。配下全体を包む。ナビゲーションで再マウントされない |
+| template | テンプレート | `$template.js`。レイアウトと同じ位置だが、ナビゲーションごとに作り直される |
+| loader | ローダー | ページやレイアウトが export する、描画前にデータを取る関数 |
+| slot / parallel route | スロット / 並行ルート | `@name/` ディレクトリ。レイアウトが children とは別に受け取る第 2 の描画領域 |
+| intercepting route | インターセプトルート | `(.)photo/` など。クライアント遷移時にスロットへ別ページを描く |
+| route handler | ルートハンドラ | `$route.js`。ページを描画せず `Request` → `Response` で答える |
+| middleware | ミドルウェア | `$middleware.js`。配下が答える前に走る |
+| boundary | 境界 | `$loading.js`（Suspense）/ `$error.js`（エラー）/ `$not-found.js`（404） |
+| prerender | プリレンダリング | ビルド時に HTML ファイルとして書き出すこと |
+| per request | リクエストごと | サーバーがリクエスト時に描画すること |
+
+## レンダリング・サーバー
+
+| 原文 | 表記 | 意味 |
+| --- | --- | --- |
+| Server Component | サーバーコンポーネント | `"use client"` を宣言しないモジュール。ブラウザに届かない |
+| client boundary | クライアント境界 | サーバーモジュールが `"use client"` モジュールを import する箇所 |
+| server action | サーバーアクション | `"use server"` モジュールの export。ブラウザから id で呼べる関数 |
+| adapter | アダプタ | `uf build --adapter <target>` の出力先。node / bun / deno / container / edge / serverless / static |
+| `--compile` | そのまま | ランタイムとアセットを 1 つの実行ファイルに埋め込む |
+| ISR | ISR | 寿命を宣言したプリレンダリング済みページを、バックグラウンドで再生成する仕組み |
+| route cache / fetch cache | ルートキャッシュ / fetch キャッシュ | どちらも opt-in。デフォルトは無効 |
+| draft mode | ドラフトモード | 署名付き Cookie で未公開コンテンツをプレビューする仕組み |
+
+## Flow
+
+| 原文 | 表記 | 意味 |
+| --- | --- | --- |
+| `component` declaration | component 宣言 | 引数リストがそのまま props の型になるコンポーネント構文 |
+| `hook` declaration | hook 宣言 | コンポーネントか別の hook からしか呼べないことを型で強制する構文 |
+| render type (`renders`) | render 型 | コンポーネントが最終的に何を描くかを表す型。`renders Tab` / `renders? Tab` / `renders* Tab` |
+| `match` | match 式 | 網羅性が検査されるパターンマッチ |
+| Flow enum | Flow enum | 実行時にも存在する列挙型 |
+| libdef / library definition | ライブラリ定義 | `.d.ts` に相当する Flow の型宣言ファイル |
+| hole | 穴 | TypeScript 宣言を Flow に翻訳したとき、表現できず `any` になった箇所 |
+| exact object type | 厳密オブジェクト型 | `{\| a: string \|}`。Flow ではデフォルトが exact |
+
+## ツールチェーン
+
+| 原文 | 表記 | 意味 |
+| --- | --- | --- |
+| task | タスク | `uf.config.js` の `tasks` に書く名前付きコマンド。`package.json` の scripts の代わり |
+| lifecycle script | ライフサイクルスクリプト | `postinstall` など、パッケージマネージャがインストール中に勝手に実行するスクリプト。uf は拒否する |
+| frozen lockfile | ロックファイル固定 | `uf install --frozen-lockfile`。CI 用。ロックファイルと manifest がズレていたら失敗 |
+| store | ストア | ランタイムやパッケージマネージャを版ごとに置く、マシン共有のディレクトリ |
+| `uf.lock` | そのまま | `node@26` のようなプレフィックス指定を実際の版に固定するファイル |
+| mode | モード | `development` / `production` / `test` など。どの `.env.*` を読むかを決める |
+| explain | explain | `uf explain <command>`。そのコマンドの各段階を誰が実行するかを表示する |
+| inspect | inspect | `uf inspect --json`。解決済みの設定とルートテーブルを表示する |

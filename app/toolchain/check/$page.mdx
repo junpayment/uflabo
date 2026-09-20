@@ -1,0 +1,138 @@
+---
+title: "型チェック"
+description: "uf check は uf lint に Flow の型推論を続けたもの。Meta 自身の Flow を Rust に移植してバイナリにコンパイルしたもので、uf にあなたの型についての第 2 の意見はない。"
+section: "toolchain"
+order: 3
+source: "/guide/check"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+uf が決めるのは、Flow がどのファイルを見るか、どのパッケージを読めるか、答えをどう報告するかです。
+
+## 走らせる
+
+2 ファイル、片方が間違っている。
+
+<Figure title="lib/total.js">
+
+```js
+// @flow
+export type LineItem = {| readonly name: string, readonly cents: number |};
+
+export function total(items: $ReadOnlyArray<LineItem>): number {
+  return items.reduce((sum, item) => sum + item.cents, 0);
+}
+```
+
+</Figure>
+
+<Figure title="lib/summary.js">
+
+```js
+// @flow
+import { total } from "./total.js";
+
+export const due: string = total([{ name: "tea", cents: 450 }]);
+```
+
+</Figure>
+
+```
+uf check
+────────
+
+lib/summary.js  1 error
+
+  error[incompatible-type]: Cannot assign total(...) to due because number [1] is incompatible with string [2].
+   --> lib/summary.js:4:28
+    │
+  4 │ export const due: string = total([{ name: "tea", cents: 450 }]);
+    │                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+  files checked  10
+  errors         1
+  warnings       0
+  rules skipped  16
+
+✗ 1 error
+
+  types checked  46
+  asked about    10 of 46
+  unchanged      44 of 46
+  inference      29.7ms
+  builtins       228.6ms (cold)
+
+  › these imports are typed as any; uf resolved no module for them
+    - @uniflowed/host/module-mocks
+    - node:async_hooks
+error: uf check failed with 1 error
+```
+
+レポートの前半は `uf lint` のもので、lint エラーは型エラーと同じ確実さで `uf check` を失敗させます。後半は推論: `types checked` は Flow が読んだ全ファイル、`asked about` は実行の対象、`unchanged` はキャッシュから答えたもの。終了コード 1。
+
+`--fix` と `--fix-unsafe` は check の前に `uf lint` の修正を適用します。型エラーを直すものは何もありません。
+
+## 何をチェックするか
+
+プロジェクト内のすべての `.js` `.jsx` `.mjs` `.cjs` と各 `package.json`。`uf lint` と同じ探し方で、`.gitignore` を尊重し、`uf.config.js` トップレベルの `ignore`（デフォルト `node_modules` `dist` `target`）を適用し、`.uf` と `.git` は決して読みません。
+
+チェックされるのに `// @flow` は不要です。`// @noflow` のファイルはパースはされる（構文エラーは報告される）が推論されず、フッターに独立した行で数えられます。**`.ts` / `.tsx` はまったくチェックされません。** その import は `any` です。
+
+```sh
+uf check lib/summary.js   # 名指ししたファイルのエラーだけ報告。import 先は依然読む
+```
+
+パスはプロジェクトルートからの相対パスの部分文字列で、glob ではなく、シェルからの相対でもありません。先頭の `./` は何にもマッチせずエラーです。
+
+## import は何に解決されるか
+
+| import 先 | 解決先 |
+| --- | --- |
+| プロジェクト内のファイル（拡張子あり・なし、index つきディレクトリ） | そのファイル、型付き |
+| ライブラリ定義が宣言するモジュール（`react`、`node:fs` など Flow が出荷するもの） | その宣言。`node_modules` の中身に関係なく |
+| Flow を出荷する `node_modules` 内のパッケージ（先頭 8 KiB に `@flow`、または横に `.flow` ファイル） | そのパッケージのファイル、exports map 経由 |
+| TypeScript 宣言を出荷し Flow のないパッケージ（自身の、または `@types`） | 宣言の Flow 翻訳。翻訳できないものは `any` でレポートに数えられる |
+| 同じワークスペースのパッケージ | manifest が公開するファイル |
+| 画像、スタイルシート、`?raw`、`import.meta.glob` / `import.meta.hot` | uf の Vite クライアント API 宣言 |
+| それ以外 | `any`、レポートに名指し |
+
+exports map は `flow` `import` `default` 条件で読まれ、それ以外は読みません。uf は `node` / `browser` / `bun` / `deno` を選ばないので、ホスト固有のエントリだけを公開するパッケージは `any` です。`.json` import は `any`。
+
+TypeScript 宣言は TypeScript と同じ方法で見つけられ、翻訳は `.uf/cache/dts` にキャッシュされます。`uf check --explain-any <package>` が各穴と翻訳内の各エラーを宣言ファイル・行・宣言つきで列挙します。
+
+「これらの import は any」は、チェックが見えない場所です。`uf install` の前はスキャフォールドが import する全 `@uniflowed/*` がそのリストで、スキャフォールドは値としてしか使わないので依然クリーンに通ります。**何にも解決しないモジュールから型を使うのは、静かな `any` ではなくエラー**です。
+
+```
+lib/price.js  1 error
+
+  error[value-as-type]: Cannot use Money as a type because it is an any-typed value. Type Money properly, so it is no longer any-typed, to use it as an annotation.
+```
+
+## ライブラリ定義と .flowconfig
+
+Flow 自身の libdef（DOM、Node の組み込み、React）が先、次に uf の Vite クライアント API と Web Crypto、次にプロジェクトのもの: `flow-typed/` 下の全ファイル（設定不要）、そして `.flowconfig` の `[libs]` が名指すもの。後の定義が前を隠します。
+
+**`[libs]` は uf が読む `.flowconfig` の唯一のセクションです。** `[ignore]` `[options]` `[lints]` `[version]` は効果がなく、ただしパースできない `.flowconfig` はスキップされずチェックを失敗させます。
+
+## 機械が読むレポート
+
+`uf check --json` はレポート全体を stdout に、それ以外を何も書きません。`uf lint --json` のレポートに `typeCheck` を足したもので、1 つ罠があります。**`errors` は両半分を数え、`diagnostics` は lint の発見だけを持ちます。** 型エラーは `typeCheck.diagnostics` にあるので、`diagnostics` が空でもプロジェクトは失敗し得ます。
+
+## 速度
+
+推論は `.uf/cache/check/` にファイルごとに、ファイル・プロジェクトの libdef・答えを生んだ uf バイナリでキーしてキャッシュされます。新しい uf はコールドスタートし、編集はそのファイルとそれを import するものを再チェックします。組み込み libdef はプロセスごとに一度マージされキャッシュされません。それが `builtins` の行で、どんなに温まっていても毎回約 200 ms。
+
+lint 半分は全コアで走り、推論は 1 スレッド。**watch モードもデーモンもありません。** `uf check` は起動し、答え、終了します。
+
+## エラーを 1 つ黙らせる
+
+`$FlowFixMe` と `$FlowExpectedError` は下の行のエラーを抑制します。期待するコードつきで書くのが最善（`// $FlowFixMe[incompatible-type]`）。同じ行の別のエラーは依然報告されます。何も抑制しなくなった抑制は報告されません。
+
+## ここにないもの
+
+- 推論が必要な lint ルール。`rules skipped` が数え、JSON が名指す
+- エディタでの型。`uf lsp` は lint 診断を publish し型エラーは出さず、ホバーは型を見せない
+- `uf prepare`（pre-commit コマンド）での型チェック
+- 失敗の複数の終了コード。lint エラー、型エラー、パースできない `.flowconfig` はすべて 1。引数がパースできないときだけ 2
+- 2 ファイルをまたいで自分自身として定義された型。互いを import で参照するエイリアスの組は拒否されず `any`

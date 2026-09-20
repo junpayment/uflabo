@@ -1,0 +1,457 @@
+---
+title: "ルーティング"
+description: "app/ 配下のファイルがルートテーブル。書くべきルート設定も、ディレクトリと同期させるリストもない。"
+section: "app"
+order: 2
+source: "/guide/routing"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+## 予約されたファイル名
+
+9 つの名前が予約されています。`app/` 内のそれ以外はすべて普通のモジュールです。
+
+| ファイル | 何か |
+| --- | --- |
+| `$page.js` | このパスのページ。export はコンポーネント |
+| `$layout.js` | このパスと配下すべてを包む。ページを `children` で受け取る |
+| `$template.js` | 同じ包み方だが、ナビゲーションごとに作り直される |
+| `$default.js` | スロットのどのルートにも URL がマッチしないとき、スロットに描画される |
+| `$not-found.js` | このパス配下で何もマッチしないときに描画 |
+| `$error.js` | このパス配下で何かが throw したときに描画 |
+| `$loading.js` | このパス配下で何かがまだ解決中のときに描画 |
+| `$middleware.js` | このパス配下が答える前に走る（認証、リダイレクト、ログ） |
+| `$route.js` | ページを描画する代わりにリクエストに答える |
+
+ページ・レイアウト・not-found は `.js` の代わりに `.mdx` でもかまいません。`_` で始まるディレクトリはルートではないので、共有コンポーネントの置き場所になります（公式サイトは `app/_design/` にデザインシステムを置いています）。
+
+```sh
+uf routes add /articles/[slug] --loader   # ファイルを書いてくれる
+uf routes list                             # ビルドと同じ文法でルート一覧
+```
+
+## パス
+
+ディレクトリがパスセグメントです。
+
+```
+app/$page.js                 →  /
+app/guide/$page.mdx          →  /guide
+app/guide/install/$page.mdx  →  /guide/install
+```
+
+角括弧のセグメントはパラメータ、spread 付きの角括弧は残りすべてを捕まえます。
+
+```
+app/posts/[slug]/$page.js    →  /posts/anything
+app/docs/[...path]/$page.js  →  /docs/a/b/c
+```
+
+`@team` という名前のディレクトリは並行ルートのスロットで、URL セグメントではありません。スロット内の `(.)photo` はインターセプトルートで、これも URL セグメントではありません。`(group)` は以前から通りセグメントになりません。
+
+「残り」は残り全部なので、spread はページへの最後のルーティングディレクトリです。`app/docs/[...path]/edit/$page.js` はどの URL からも届かないページになるため、`uf build` と `uf dev` は名指しで拒否します。
+
+パラメータは props として届きます。
+
+```js
+// @flow
+export default component Post(params: {| readonly slug: string |}) {
+  return <article>{params.slug}</article>;
+}
+```
+
+## レイアウトはネストする
+
+パス上のすべてのレイアウトが、外側から順にページを包みます。レイアウトを共有するページ間の遷移ではレイアウトは再描画されないので、サイドバーのスクロール位置や状態は遷移を生き残ります。
+
+## テンプレートは再マウントする
+
+`$template.js` は同じ包み方で、同じ問いに逆の答えをします。レイアウトは持続し、テンプレートは捨てられてナビゲーションごとに作り直されます。
+
+<Figure title="app/guide/$template.js">
+
+```js
+// @flow
+import * as React from "react";
+
+export default component Template(children: React.Node) {
+  return <div className="fade-in">{children}</div>;
+}
+```
+
+</Figure>
+
+自分のセグメントのレイアウトの内側、その下すべての外側に座るので、再マウントは「このセグメントとその下」を意味し、周りのフレームは含みません。入場アニメーションや「ページごとに走るべき useEffect」に必要なものです。キーは pathname なので、クエリ文字列だけ変わる遷移では再マウントしません。
+
+## 並行ルート（スロット）
+
+`@` で始まるディレクトリはスロットです。レイアウトが `children` の横に描画する第 2 のもの。
+
+```
+app/dashboard/$layout.js               フレーム。両方を描画する
+app/dashboard/$page.js                 →  /dashboard          children として
+app/dashboard/members/$page.js         →  /dashboard/members  children として
+app/dashboard/@team/$default.js        URL が何も言わないときの team スロット
+app/dashboard/@team/members/$page.js   /dashboard/members    team として
+```
+
+レイアウトはスロットを `@` を除いたディレクトリ名で受け取ります。
+
+<Figure title="app/dashboard/$layout.js">
+
+```js
+// @flow
+import * as React from "react";
+
+export default component Dashboard(children: React.Node, team: React.Node) {
+  return (
+    <div className="dashboard">
+      <main>{children}</main>
+      <aside>{team}</aside>
+    </div>
+  );
+}
+```
+
+</Figure>
+
+スロットは URL を足しません。`/dashboard/members` は `children` として `members/$page.js` を、`team` として `@team/members/$page.js` を同時に描画します。通常のページがマッチしない URL はスロットが何を持っていても 404 です。だから uf には Next.js のような `children` の default がありません。
+
+`$default.js` はスロットのどのルートにも URL がマッチしないときに描画されるものです。ないスロットは何も描画せず、レイアウトには `null` が渡されるので `{team ?? <Empty />}` と書けます。
+
+名指しで拒否される 4 つのルール:
+
+- スロットを宣言するセグメントは自分のレイアウトを持たなければならない（スロットはそのレイアウトが受け取る prop だから）
+- スロットを `children` や `params` と名付けられない
+- `$default.js` はスロットディレクトリの直下にだけ置ける
+- スロットに `$not-found.js` / `$route.js` / `$middleware.js` は置けない（#267）
+
+スロット内の `$loading.js` はスロットローカルです。遅いサイドパネルがメインページを置き換えずにプレースホルダをストリームできます。スロット内の `$error.js` はブラウザではスロットローカルで、スロットのページだけを置き換えます。
+
+スロットページの loader は実行されません。ハイドレーション用にデータを埋め込む場所がないからです。コンポーネント内で fetch するか、URL が名指すページにデータを置いてください。
+
+## インターセプトルート
+
+スロット内の `(.)photo` `(..)photo` `(...)photo` はインターセプトルートです。クライアント遷移がその URL に達したとき、その URL が名指すページの代わりにスロットが表示するもの。フィードの上に開くモーダルで、アドレスバーには写真自身のアドレスが入る、という形のためにあります。
+
+```
+app/feed/$layout.js                        フレーム。modal を描画する
+app/feed/$page.js                       →  /feed
+app/feed/photo/[id]/$page.js            →  /feed/photo/:id   写真ページ
+app/feed/@modal/(.)photo/[id]/$page.js     /feed/photo/:id   modal 内、フィードの上に
+```
+
+1 つの URL への 2 つの到達方法と、2 つの答え:
+
+- **スロットのあるページから始まるクライアント遷移**は、インターセプトページを `modal` に描画します。アドレスバーは `/feed/photo/1`。他はすべて元のまま。`children` は来たページを描画し続け、データもスクロール位置も状態も保たれます。
+- **それ以外**（リロード、共有されたリンク、新しいタブ、クローラ、`uf build` のプリレンダリング）は `app/feed/photo/[id]/$page.js` を描画します。リクエストは「どこへ行くか」を運び「そのとき画面に何があったか」を運ばないので、サーバーは決してインターセプトページを描画しません。
+
+マーカーは、ディレクトリがどの URL の代わりに立つかを URL セグメント単位で数えます（ディレクトリ単位ではない）。`@slot` と `(group)` は URL セグメントを寄与しないので、越えるべきレベルではありません。
+
+| ディレクトリ | インターセプトする URL |
+| --- | --- |
+| `app/feed/@modal/(.)photo/` | `/feed/photo` — ディレクトリのいるレベル |
+| `app/feed/@modal/(..)photo/` | `/photo` — 1 URL セグメント上 |
+| `app/shop/[category]/@modal/(..)(..)photo/` | `/photo` — 2 つ上 |
+| `app/shop/[category]/@modal/(...)photo/` | `/photo` — ルーターのルートから |
+
+戻る・進む・リロードも面倒を見ます。モーダルから戻ればスロットが空のフィードに戻り、進めばまた同じフィードの上のモーダル。インターセプトされたエントリのリロードは写真ページを描画し、そのエントリは「インターセプトされていた」ことを忘れます。
+
+Next.js から来る人へ、意図的に厳しい 2 点: **スロットの中でだけ**（Next.js は children を丸ごと置き換えることも許す）、そして**代わりに立つページが存在しなければならない**（クリックした人には動き、リンクを送られた全員には 404、というインターセプトは、ファイルの場所で拒否される）。
+
+## not-found もネストする
+
+`$not-found.js` は `$layout.js` と同じセグメントファイルです。何にもマッチしないパスは、その上でもっとも近いものを、そのディレクトリのレイアウトの内側に得ます。loader から throw された `notFound()` も同じ境界に着地します。
+
+どこにも宣言しないプロジェクトも使える 404 を得ます。uf 自身のページがルーターのルートのレイアウト内に描画されるので、マストヘッドとスタイルシートはそこにあります。
+
+## ページが throw したとき
+
+`$error.js` はもう片方の境界で、同じ最近接祖先ルールで解決されます。
+
+<Figure title="app/guide/$error.js">
+
+```js
+// @flow
+import type { RouteError } from "@uniflowed/router";
+
+export default component Error(error: RouteError, reset: () => void) {
+  return (
+    <section>
+      <h1>
+        {match (error) {
+          {kind: "unauthorized"} => "Please sign in",
+          {kind: "forbidden"} => "You cannot read this page",
+          {kind: "thrown"} => "This page did not load",
+        }}
+      </h1>
+      <button type="button" onClick={reset}>Try again</button>
+    </section>
+  );
+}
+```
+
+</Figure>
+
+3 ファイルではなく 1 ファイル。`unauthorized()` と `forbidden()` は `notFound()` と同じように throw され、`$unauthorized.js` / `$forbidden.js` ではなく 1 つの `RouteError` のケースとして届きます。ステータスは 401、403、500。
+
+`uf build` 中に throw したルートはそのルートを失敗させます。URL を報告し、描画できた他のルートを書き、非ゼロで終了します。`dist/` にエラーページは書きません。
+
+## ページがまだ解決中のとき
+
+`$loading.js` は、このセグメントのページとその下すべてを囲む `<Suspense>` 境界です。
+
+<Figure title="app/guide/$loading.js">
+
+```js
+// @flow
+export default component Loading() {
+  return <p aria-busy="true">Loading…</p>;
+}
+```
+
+</Figure>
+
+他の 2 つの境界と違い、最近接祖先ルールでは解決されません。ローディング境界はネストします。`app/$loading.js` と `app/guide/$loading.js` は 1 つのルート上の 2 つの境界です。
+
+境界は自分のセグメントのレイアウトの内側・その下すべての外側に入るので、シェルが先に届きます。サーバーはレイアウトとフォールバックをページがまだ解決中のうちに送り、準備できたらページがフォールバックを置き換えます。**これがレンダラーがストリームする理由のすべて**です。
+
+`uf build` はフォールバックではなく解決済みのページを書きます。ディスク上のファイルには待つものがないので、完成したドキュメントが入ります。
+
+`$loading.js` のないセグメントには境界がまったくありません。uf は見えない境界を挿入しません。
+
+ページの loader もストリームします。ルートが `$loading.js` を宣言すると、サーバーは loader の値ではなく promise をページに渡し、最内の境界の中で unwrap します。2 つのルールが付いてきます:
+
+- データからメタデータを生成するルートは待ちます。`generateMetadata` は loader の答えを読み、head は body の前に書かれます。
+- **遅延された loader はレスポンスに口を出せません。** ステータス行はシェルと共に出るので、遅延された loader から throw された `notFound()` や `redirect()` は 404 ページではなくエラー境界に届き、ドキュメントは 200 です。すでに送ったバイトは取り消せません。loader がレスポンスを決めるルートは `$loading.js` を宣言すべきではありません。
+
+## データの読み込み
+
+ページやレイアウトは `loader` を export できます。コンポーネントの前、レスポンス送信の前に走ります。
+
+```js
+export async function loader({ params }: LoaderArgs) {
+  return { post: await readPost(params.slug) };
+}
+
+export default component Post(data: {| readonly post: Post |}) {
+  return <h1>{data.post.title}</h1>;
+}
+```
+
+`redirect()` `permanentRedirect()` `notFound()` は return ではなく throw するので、データの型が「またはリダイレクト」を許容する必要がありません。
+
+### 答えの一部を遅延する
+
+loader は戻り値に promise を残せます。ページは promise が pending のまま描画され、値は同じレスポンスの中で後から届きます。
+
+```js
+export async function loader({ params }: LoaderArgs) {
+  return {
+    post: await readPost(params.slug),      // 待つ
+    comments: readComments(params.slug),    // 待たない
+  };
+}
+
+export default component Post(
+  data: {| readonly post: Post, readonly comments: Promise<Array<Comment>> |},
+) {
+  return (
+    <article>
+      <h1>{data.post.title}</h1>
+      <Suspense fallback={<p>Loading comments…</p>}>
+        <Comments comments={data.comments} />
+      </Suspense>
+    </article>
+  );
+}
+
+component Comments(comments: Promise<Array<Comment>>) {
+  return <ul>{use(comments).map((one) => <li key={one.id}>{one.body}</li>)}</ul>;
+}
+```
+
+`defer()` を呼ぶことも `<Await>` を描画することもありません。データ内の promise がそのすべてを言っているからです。promise の解決値はデータ（JSON にできるもの）で、promise の promise は拒否されます。reject された promise はそれを読んでいた境界に届き、理由はサーバーに留まります。レスポンスはすでに 200 です。
+
+## メタデータ
+
+ページやレイアウトは `metadata` オブジェクトか、読み込んだデータが必要なら `generateMetadata` 関数を export できます。
+
+```js
+import type { Metadata } from "@uniflowed/router";
+
+export const metadata: Metadata = {
+  title: "Install · uf",
+  description: "One command, no plugin assembly.",
+  canonical: "/guide/install",
+  openGraph: { images: ["/brand/uf.png"] },
+  twitter: { card: "summary_large_image" },
+};
+```
+
+レイアウトが外側から順にマージされ、次に MDX の front matter、ページ自身の metadata、`generateMetadata`。キー単位のマージなので、`canonical` だけ宣言するページはレイアウトが設定した title を保ちます。ルーターは結果を他の何よりも先に hoistable な head 要素として描画するので、JavaScript を走らせないクローラにも効きます。
+
+`metadataBase` はサイトのオリジンで、残りを正しくするものです。Open Graph も Twitter も絶対 URL を要求し、ルートモジュールは配信されるホストを知り得ません。ルートレイアウトで一度宣言すれば全子孫が継承します。
+
+`canonical` は `<link rel="canonical">` と `og:url` の両方として出ます。**ページに置き、レイアウトには決して置かない**でください。レイアウトの canonical は「セクション全体が 1 ページ」と検索エンジンに伝えます。
+
+他のフィールド: `robots`（宣言しなければ `<meta name="robots">` 自体が出ない）、`alternates.languages`（相互参照が必要、`x-default` も 1 タグ）、`pagination`、`jsonLd`（外側の宣言を置き換えずに**追加する**唯一のフィールド）。
+
+コンポーネントが計算するメタデータには `useSeo` があります。要素を返し、呼び出し側が描画します。head に書き込む hook は effect でやらざるを得ず、effect はサーバーで走らないからです。
+
+## ナビゲーション
+
+```js
+import { Link } from "@uniflowed/router";
+
+<Link to="/guide/install">Install</Link>
+```
+
+`Link` はクライアント側で遷移し、デフォルトでホバー時に prefetch します。`prefetch="render"` で画面に入ったら即取得、`prefetch="off"` で取得しません。`useRouter()` で命令的に遷移、`useRoute()` で現在のパス・params・search を取得します。
+
+JavaScript を出荷しないルートへの `Link` はドキュメント遷移です。`uf build` は到達可能な `"use client"` モジュールがないルートのページをクライアントバンドルから外すので、ルーターが描画するページがなく、ブラウザがドキュメントを取得します。
+
+### 遷移が取得したものを保つ
+
+デフォルトでは遷移ごとにサーバーに尋ねます。`app.rendering.staleTime` は取得したものをその秒数だけ保ちます。
+
+<Figure title="uf.config.js">
+
+```js
+export default defineConfig({
+  app: { rendering: { staleTime: 30 } },
+});
+```
+
+</Figure>
+
+エントリはパスとクエリでキーされ、同時に最大 32 ルート。`router.refresh()` とすべてのサーバーアクションは保持をすべてクリアします。デフォルトの `0` は何も保ちません。これが uf のあらゆる場所でのキャッシュ方針です: **プロジェクトが「どれくらい古い答えを見せてよいか」を言うまで、サーバーが今答えたもの以外は見せない。**
+
+### View Transitions
+
+すべてのクライアント遷移は、ブラウザにあれば `document.startViewTransition` を通ります。スタイルシートなしではブラウザのデフォルトのクロスフェード。ルートは名前を付けられます。
+
+<Figure title="app/guide/$layout.js">
+
+```js
+export const viewTransition = "manual";
+```
+
+</Figure>
+
+```css
+html[data-uf-view-transition="manual"]::view-transition-old(root) {
+  animation: 120ms ease-out both fade-out;
+}
+```
+
+`prefers-reduced-motion` はアプリではなくルーターが尊重します。上書きする方法はありません。`transition={false}` で 1 回の遷移をカットにできます。
+
+## リダイレクト、リライト、レスポンスヘッダ
+
+`uf.config.js` の 3 つのリストが、ルートテーブルより先にリクエストに答えます。`next.config.js` の `redirects()` `rewrites()` `headers()` を、関数ではなくデータとして書いたものです。
+
+<Figure title="uf.config.js">
+
+```js
+export default defineConfig({
+  app: {
+    router: {
+      redirects: [
+        { source: "/blog/:slug", destination: "/posts/:slug", permanent: true },
+      ],
+      rewrites: [{ source: "/me", destination: "/users/me" }],
+      headers: [
+        { source: "/:path*", headers: { "X-Frame-Options": "DENY" } },
+      ],
+    },
+  },
+});
+```
+
+</Figure>
+
+| リスト | 何をするか | どこで効くか |
+| --- | --- | --- |
+| `redirects` | `permanent: true` なら 308、false なら 307。最初にマッチしたルールが勝つ | 何よりも先。ビルドが書いたファイルにも |
+| `rewrites` | `destination` のルートを配信し、アドレスバーは要求されたパスのまま | ビルドのファイルの後、ミドルウェアの前 |
+| `headers` | レスポンスヘッダを設定。マッチしたルール全部が適用され、後のものが勝つ | すべてのレスポンス、ファイルも含む |
+
+`next.config.js` が受け付けて uf が読まないもの（正規表現、`:slug+` / `:slug?`、セグメント内パラメータ、`has` / `missing`）は設定読み込み時に名指しで拒否されます。Cookie やヘッダやクエリの条件はミドルウェアの仕事です。リライトはアプリを離れません。別オリジンへ送るのはリダイレクト、別サーバーへ proxy するのはルートハンドラです。
+
+静的ホストではどれも走りません。`uf build --adapter static` はルールを宣言するプロジェクトを名指しで拒否します。
+
+## ベースパスと末尾スラッシュ
+
+<Figure title="uf.config.js">
+
+```js
+export default defineConfig({
+  app: {
+    router: {
+      basePath: "/docs",
+      trailingSlash: "never",
+    },
+  },
+});
+```
+
+</Figure>
+
+| キー | デフォルト | 意味 |
+| --- | --- | --- |
+| `basePath` | なし | このパスの下でアプリを配信。外のリクエストは 404 |
+| `trailingSlash` | `"ignore"` | `"never"` は `/about/` を `/about` に 308。`"always"` は逆。`"ignore"` は両方に答える |
+
+プロジェクトが書くものはすべてアプリのパス（ベースなし）で、uf がブラウザに届くものにベースを付けます。逆にミドルウェア・ルートハンドラ・ページはベースが取り除かれたリクエストを受け取り、絶対アドレスを自分で組むコードは `basePath()` でベースを戻します。
+
+## ルートはいつ描画されるか
+
+パラメータ付きのページは、それを列挙する場合だけプリレンダリングされます。
+
+<Figure title="app/posts/[slug]/$page.js">
+
+```js
+export function generateStaticParams(): $ReadOnlyArray<{ readonly slug: string }> {
+  return [{ slug: "hello-world" }, { slug: "second-post" }];
+}
+```
+
+</Figure>
+
+パラメータのないページはデフォルトでプリレンダリングされ、自分でそうでないと言えます。
+
+<Figure title="app/now/$page.js">
+
+```js
+export const dynamic = "force-dynamic";
+```
+
+</Figure>
+
+`cookies()` や `headers()` を読むページ、毎回新鮮でなければならないページ用です。Next.js の `"force-static"` と `"error"` はまだチェックされないので、名指しするとビルドが失敗します。
+
+## ルートの型
+
+`uf build` `uf dev` `uf prepare` が設定の隣に `router.js` を書き、存在するパスと各パラメータを名指しします。
+
+```js
+import { route } from "../router.js";
+
+route("/posts/:slug", { slug: post.slug });
+route("/about");
+route("/docs/:path*", { path: ["guide", "routing"] });
+```
+
+次のどれも本番の 404 ではなく型エラーです。
+
+```js
+route("/nope");                               // このルーターが配信しないパス
+route("/posts/:slug");                        // パラメータが足りない
+route("/posts/:slug", { slug: 1 });           // 型が違う
+route("/posts/:slug", { slug: "a", b: "c" }); // b はパラメータではない
+route("/docs/:path*", { path: "guide" });     // catch-all は配列
+```
+
+ビルダーとマッチャーは同じコードなので、組んだリンクは組んだ元のルートに必ずマッチします。

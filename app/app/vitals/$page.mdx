@@ -1,0 +1,112 @@
+---
+title: "Web Vitals"
+description: "LCP、CLS、INP、TTFB、FCP をブラウザ自身の PerformanceObserver から読み、あなたが渡すコールバックに 1 つずつ渡す。デフォルトの送信先もサードパーティもなく、書くまでリクエストは出ない。"
+section: "app"
+order: 17
+source: "/guide/vitals"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+## API の全体
+
+```js
+import { collectVitals } from "@uniflowed/web";
+
+collectVitals({
+  report: (vital) => {
+    console.log(vital.name, vital.value, vital.rating);
+    // LCP 1840 good
+  },
+});
+```
+
+`collectVitals` は収集を止める関数を返します。各メトリクスを、それが最終になる瞬間にちょうど 1 度報告します。5 つ全部が同じ瞬間ではありません。
+
+コンポーネントからは `useVitals` がマウントに結び付いた同じものです。ルートレイアウトはページが描かれてずっと後にコミットしますが、それで問題ありません。すべてのオブザーバがブラウザに事前に記録したエントリの再生を頼むので、存在しなかったコンポーネントがサーバー描画ページの最初の描画を計測します。
+
+## 得るもの
+
+```js
+{
+  name: "LCP",              // "TTFB" | "FCP" | "LCP" | "CLS" | "INP"
+  value: 1840,              // ミリ秒。CLS だけ無単位
+  rating: "good",           // "good" | "needs-improvement" | "poor"
+  navigationType: "navigate",
+}
+```
+
+| | good | poor above |
+| --- | --- | --- |
+| TTFB | ≤ 800ms | 1800ms |
+| FCP | ≤ 1800ms | 3000ms |
+| LCP | ≤ 2500ms | 4000ms |
+| CLS | ≤ 0.1 | 0.25 |
+| INP | ≤ 200ms | 500ms |
+
+`navigationType` は `navigate` `reload` `back-forward` `prerender` `unknown`。すべてのメトリクスに付くのは、5 種類をプールすることが「遅いサイトが速く計測される」方法だからです。reload はキャッシュが温かく、back-forward はすべてが温かい。
+
+## どこかへ送る
+
+```js
+import { collectVitals, vitalsBeacon } from "@uniflowed/web";
+
+collectVitals({ report: vitalsBeacon() });
+```
+
+ページ自身のオリジンの `/__uf/vitals` に POST します。送信先は URL ではなくパスなので、他人のサーバーに偶然向けることはできません。`/__uf/` は dev サーバーの名前空間で、本番ではあなたのパスを渡します。
+
+```js
+collectVitals({ report: vitalsBeacon("/api/vitals") });
+```
+
+<Figure title="app/api/vitals/$route.js">
+
+```js
+export async function POST(request: Request): Promise<Response> {
+  const report = await request.json();
+  // { url: "https://example.com/pricing", vitals: [ … ] }
+  return new Response(null, { status: 204 });
+}
+```
+
+</Figure>
+
+それがエンドポイント契約のすべてです。受信側はページ読み込みごとに複数のレポートを受け取ります。メトリクスは別々の瞬間に最終になり、ビーコンはマイクロタスクをまたいで合体させるので、レポートは加算的です。
+
+## マシンを離れるもの
+
+プロジェクトが求めない限り、何も。`@uniflowed/web` の import は何もしません。トップレベルの副作用もリスナーも接続もなし。`collectVitals` はあなたが渡した関数を呼び、それ以外を呼びません。`vitalsBeacon` はあなたが構築しなければならず、自オリジンのパスに POST します。
+
+## web-vitals と数字が違う場所
+
+`web-vitals` が参照実装で、これはそのフォークではなく同じエントリタイプの直接読み取りです。生のエントリを誰もが引用する数字にする補正はすべてここにあります。CLS は合計ではなく最悪の 5 秒窓、INP はページが蓄積するにつれ最遅のインタラクションから降りていき、すべてのタイムスタンプは prerender を引く。残る差:
+
+- **ページ読み込みごとに 1 組。** `web-vitals` は bfcache 復元で全部を再武装し第 2 組を報告します。uf は 1 組で止まります。
+- **アトリビューションなし。** `web-vitals` の第 2 ビルドは LCP だった要素や CLS を構成したシフトを名指します。uf は数字を報告し、原因は報告しません。自分のページについて読む数字としては興味深い半分が欠けています。
+- **デルタなし。** 各メトリクスは最終時に 1 度なので、デルタは常に値と等しくなります。
+- **prerender は補正され、遅延されない。**
+- **`interactionCount` がない場所。** uf は実際に見たインタラクション数にフォールバックし、答えを最遅側に偏らせます。ページを決して過大評価しません。
+
+## 計測できないブラウザ
+
+ブラウザがエントリタイプを提供しないメトリクスは**まったく報告されません**。0 でも `null` でもなく。0 はこの 5 つのうち 3 つで最良のスコアなので、「このブラウザには分からない」に 0 を報告するコレクタは、最悪のページを最良に見せ、それは良いニュースに見えてしまいます。
+
+- CLS は、ブラウザが `layout-shift` をサポートし何も動かなかったとき 0 として報告されます。それは計測です。
+- INP は、誰もインタラクトしなかったとき報告されません。遅くなり得たものがありません。
+
+チェックは `PerformanceObserver.supportedEntryTypes` をメトリクスごとに尋ね、決して `typeof PerformanceObserver` ではありません。Node は何年も `PerformanceObserver` を持ちながらこれらのタイプを 1 つも提供しないので、明白なガードはサーバー描画中に通り、何も計測しません。
+
+## 開発中
+
+`uf dev` は `/__uf/vitals` に答えるので、引数なしのビーコンは起動したターミナルに報告します。
+
+```
+✗ web vitals: LCP is poor (3200 ms)
+  page  http://127.0.0.1:5173/pricing
+  LCP 3200 ms — poor
+  CLS 0.02 — good
+  TTFB 120 ms — good
+```
+
+レポート中の最悪の rating が読み方を決めます。poor はエラー、needs improvement は警告、全部 good は情報。誰も行動できない数字を行動できる数字と同じ大きさで印字すると、人は読むのをやめます。何もどこにも送られません。ビルドされたアプリに `/__uf/` は何もないので、本番にはあなた自身のエンドポイントが要ります。

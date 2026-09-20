@@ -1,0 +1,189 @@
+---
+title: "ターミナル UI（@uniflowed/tui）"
+description: "ターミナルをホストにした React。ページ用に書くのと同じコンポーネント・hook・状態・effect を、flexbox でレイアウトしセルとして描く。差分は変わったセルだけを送る。"
+section: "targets"
+order: 3
+source: "/guide/tui"
+---
+
+## アプリケーション全体
+
+```js
+// @flow
+import { useState } from "@uniflowed/react";
+import { Box, Text, render, useKeyboard } from "@uniflowed/tui";
+
+component Workers() {
+  const [running, setRunning] = useState<number>(3);
+
+  useKeyboard((key) => {
+    if (key.name === "up") setRunning((n) => n + 1);
+    if (key.name === "down") setRunning((n) => Math.max(0, n - 1));
+  });
+
+  return (
+    <Box border={true} borderStyle="rounded" padding={1} title=" uf test " titleAlignment="center" width={28}>
+      <Text bold={true}>Workers</Text>
+      <Box flexDirection="row" justifyContent="space-between">
+        <Text fg="gray">running</Text>
+        <Text>{String(running)}</Text>
+      </Box>
+    </Box>
+  );
+}
+
+const app = render(<Workers />);
+process.on("SIGINT", () => app.stop());
+```
+
+これが描くもの（矢印キーで数字が変わる）:
+
+```
+╭──────── uf test ─────────╮
+│                          │
+│ Workers                  │
+│ running                3 │
+│                          │
+╰──────────────────────────╯
+```
+
+上の枠はスクリーンショットではありません。`packages/tui/tui.test.js` がこのコンポーネントを描画し、1 文字ずつ一致することを検証します。
+
+## OpenTUI に従う
+
+OpenTUI が uf の従うターミナル UI ライブラリで、読者が知るべきことは同じです。`flexDirection` は `"row"` ではなく `"column"` から始まる（ターミナルは行の積み重ね）、`alignItems` は `"stretch"` から、数値で幅を与えた子の `flexShrink` は 0、キーは `"enter"` / `"esc"` ではなく `"return"` / `"escape"`、フォーカスはライブラリが動かすものではなく prop。
+
+違うのは下です。OpenTUI のコアは FFI 越しの Zig、uf のは Flow です（理由はページ末尾）。
+
+## 変わったセルだけ
+
+ターミナルプログラムが遅いのは、箱のレイアウトが遅いからではありません。80×24 は 1,920 セルで、そのレイアウトはどの言語でもマイクロ秒です。遅いのはターミナルに渡すバイトで、パイプの向こうのエミュレータがパースして再描画しなければならないからです。
+
+だから `@uniflowed/tui` は最後に描いたフレームを保ち、次をセル単位で比較し、差分を書きます。
+
+| | 送るセル | バイト |
+| --- | --- | --- |
+| 最初のフレーム | 168 | 239 |
+| 上矢印を押す | 1 | 8 |
+
+8 バイト: カーソル移動と数字 1 つ。
+
+## React Ink と計測
+
+ターミナルに書いたバイト（決定的。数字が動いたら報告を拒否するベンチマーク）:
+
+| | 最初のフレーム | 1 文字 | 1 行スクロール | 全部 |
+| --- | --- | --- | --- | --- |
+| @uniflowed/tui | 2,108 | **8** | 345 | 534 |
+| ink 7.1.1, デフォルト | 1,122 | 1,307 | 1,307 | 1,328 |
+| ink 7.1.1, incrementalRendering | 1,122 | 128 | 1,224 | 1,283 |
+
+声に出して言う価値のある 3 つ:
+
+- **uf は最初のフレームで負けます**。Ink はフレームをテキストと改行として書き、uf は各ランの前に絶対カーソル位置を付けたセルとして書き、全行を全幅にパディングします。以後のフレームを安くするアドレッシングのコストで、1 フレーム描いて終わるレンダラーはこれであるべきではありません。
+- **Ink 7 は頼めばずっと良い。** `incrementalRendering` をオンにするとステータス行 1 文字が 1,307 バイトから 128 に。uf は 8 バイトで、差は 160 倍ではなく 16 倍。Ink のデフォルトだけ計測するのは、uf がより大きく勝つ比較を選ぶことでした。
+- **優位はもっとも重要でないところでもっとも小さい。** すべてが変わるとき、セルと行は同じ桁のバイトになります。
+
+ウォールクロックは 3 つを分けません。この規模で両ライブラリが実際に待っているのは、共有する React のスケジューラです。
+
+## 画面に収まらないもの
+
+`ScrollBox` は自身より高いコンテンツへの窓です。高さと行オフセットを与えます。
+
+```js
+component Log(lines: $ReadOnlyArray<string>) {
+  const [top, setTop] = useState<number>(Number.MAX_SAFE_INTEGER);
+  useKeyboard((key) => {
+    if (key.name === "up") setTop((row) => Math.max(0, row - 1));
+    if (key.name === "down") setTop((row) => row + 1);
+    if (key.name === "end") setTop(Number.MAX_SAFE_INTEGER);
+  });
+  return (
+    <ScrollBox height={10} scrollTop={top}>
+      {lines.map((line, index) => <Text key={String(index)} wrap="none">{line}</Text>)}
+    </ScrollBox>
+  );
+}
+```
+
+`Number.MAX_SAFE_INTEGER` はトリックではありません。レイアウトはオフセットをコンテンツが実際に持つ範囲にクランプするので、最大の数は「いちばん下」を意味します。オフセットは呼び出し側のもので、キーはどれもバインドされていません。スクロール領域内で矢印キーが何をすべきかはアプリの問いです。
+
+**窓のコストであり、コンテンツのコストではない。**
+
+| 行数 | 最初のフレーム | 1 行スクロール | 1 行追加 |
+| --- | --- | --- | --- |
+| 30 | 0.33 ms | 0.16 – 0.29 ms | 0.17 – 0.32 ms |
+| 1,000 | 5.8 ms | 0.20 – 0.28 ms | 0.16 – 0.41 ms |
+| 10,000 | 65 ms | 0.21 – 0.25 ms | 0.23 – 0.28 ms |
+| 100,000 | 602 ms | 0.21 – 0.31 ms | 0.26 – 0.33 ms |
+
+3,000 倍のコンテンツで、フレームは違いが分かりません。横スクロールはありません。ターミナルより広いコンテンツは、ほぼ常に折り返すべきだったコンテンツです。
+
+## キーボードとフォーカス
+
+`useKeyboard` は他の何より先に、コンポーネントが登録した順ですべてのキーを見ます。focusable で focused な `Box` は残りを `onKeyDown` で受け取ります。`key.stopPropagation()` は後続のハンドラとフォーカスされた box を黙らせ、`key.preventDefault()` は他のグローバルハンドラを走らせつつフォーカスされた box をスキップします。
+
+**フォーカス自体は状態です。** 自動 Tab 移動はありません。Tab が何をすべきかはアプリの問いで、フォームでは次のフィールドへ、エディタではタブを挿入します。
+
+### 貼り付けはタイピングではない
+
+ターミナルは貼り付けを非常に速いタイピングとして届け、それがプロンプトに 2 行貼ると 1 行目が実行される理由です（間の CR が Enter として届く）。`@uniflowed/tui` はターミナルの bracketed-paste モードをオンにするので、貼り付けたテキストは 1 つのイベントとして届きます。
+
+```js
+useKeyboard((key) => {
+  if (key.name === "paste") setBuffer((text) => text + key.sequence);
+});
+```
+
+`key.sequence` はクリップボードそのままで、だから信用できません。改行、制御バイト、独自のエスケープシーケンスを含み得て、キーではなくテキストとして渡すのが要点です。
+
+## マウス
+
+マウスレポートはアプリが求めるまで off です。
+
+```js
+const app = render(<Board />, { mouse: true });
+```
+
+このパッケージが OpenTUI と意図的に違う 1 か所で、理由はプログラムではなく読者です。マウスをレポートしているターミナルは自身のクリック＆ドラッグを処理しなくなるので、行を選んでコピーするのに誰も言わなかった修飾キーが必要になります。
+
+on にすると、すべての `Box` が OpenTUI のハンドラを取ります: `onMouseDown` `onMouseUp` `onMouseMove` `onMouseDrag` `onMouseDragEnd` `onMouseDrop` `onMouseOver` `onMouseOut` `onMouseScroll`。「ポインタの下」は読者が見えるものを意味します。ヒットテストはペインタが描きながら埋めるグリッドです。ドラッグは始まった box に属します。
+
+## テキスト選択
+
+マウスをオンにするとターミナル自身の選択が読者から奪われるので、マウスは代替を連れてきます。テキスト上の左押下とドラッグが 2 点間のセルを選び、反転で描き、アプリはそれを読み戻せます。`useClipboard()` は書き込み専用で、対話的ターミナルでは OSC 52 を送り、リダイレクトされた出力では `supported: false` を報告します。
+
+選択は画面上の 2 セルであり、あなたのテキスト内の範囲ではありません。`selectable={false}` は色のように継承されるので、1 つの prop でステータスバーや装飾枠全体をコピーから外せます。
+
+## あなたのと違うことのできるターミナル
+
+能力は最初のフレームの前に一度、uf CLI と同じ入力・同じ優先順で解決されます。
+
+- **truecolour なし。** 24 ビット色は 256 色キューブに、次に基本 16 色に降格され、落とされません。
+- **色なし。** エスケープシーケンスは一切書かれません。レイアウト、枠、テキストは届きます。
+- **Unicode なし。** 枠は `+` `-` `|` で描かれ、箱のサイズは変わりません。
+- **誰も見ていない。** ターミナルでないストリームにはカーソルアドレッシングも増分更新もなし。最終フレームが停止時に素の行として一度書かれます。
+
+テキストは `String.length` ではなく grapheme cluster とターミナル桁で計測されます。「界」は 2 セル、結合文字は 0 セル。だから日本語パスの表は揃います。
+
+## ターミナルなしでテスト
+
+```js
+import { testRender } from "@uniflowed/tui";
+
+const app = testRender(<Workers />, { width: 28, height: 6 });
+app.press(UP_ARROW_BYTES); // ターミナルが上矢印で実際に送るエスケープシーケンス
+expect(app.text()).toContain("running                4");
+```
+
+キーはターミナルが実際に送るバイトとして届くので、エスケープシーケンスのデコーダはすべての入力テストで運動します。
+
+## なぜ Rust ではなく JavaScript か
+
+uf のルールは「ボトルネックになり得るものは Rust に属する」ですが、このパッケージは Flow です。仕事はターミナルに束縛されている。リポジトリ全体ではなく、プロジェクトのサイズに比例せず、誰かがキーを押す速さで起きる。高価なのは書き込みで、少なく書くのは言語ではなくアルゴリズム。そしてネイティブレンダラーは全プラットフォームのビルド済みバイナリを意味し、uf には今日 JavaScript とネイティブの間のブリッジがまったくありません。
+
+## まだないもの
+
+キーリリース、画像、リッチコンテンツコンポーネント（Code、Markdown、Diff、TextTable）、OpenTUI の残りのアプリ API（通知、音声、アニメーション）は未実装（#314）。`Select` / `TabSelect` のような項目選択コンポーネントもまだです。
+
+uf 自身の CLI もまだこれで描いていません（#316）。起動時間の計測: `uf info` は 8 ms、`node -e 0` は 58 ms、1 フレーム描く Flow エントリポイントは warm 149 ms / cold 383 ms。バナーはこの方法では書けず、すでに Node を払って何分も走るコマンド（`uf test --watch`）ならできます。

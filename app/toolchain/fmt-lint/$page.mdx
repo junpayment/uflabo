@@ -1,0 +1,181 @@
+---
+title: "フォーマットとリント"
+description: "どちらもコンパイラと同じ木を読む。フォーマッタは Meta の Flow パーサーの上の Rust プリンタ。リンタは uf 自身のルールと Flow の組み込み lint と React Compiler の診断を 1 パス・1 レポートで走らせる。"
+section: "toolchain"
+order: 2
+source: "/guide/format"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+## uf fmt
+
+プロジェクト内のすべての Flow、JavaScript、JSON、CSS、TypeScript ファイルをフォーマットします。Markdown は含みません。`--check` は書かずに非ゼロで終了し、CI が走らせるべきものです。
+
+Flow ファイルは公式 Flow パーサーとそのために書かれたプリンタを通るので、`component` `hook` `renders` `match` `enum` は「生き延びる」のではなく第一級の構文としてフォーマットされます。出力は Prettier の慣習（ダブルクォート、末尾カンマ、同じ改行判断）に従います。フォーマッタの要点は誰も議論しないことで、Prettier はすでにその議論に勝ったからです。デフォルト幅は Prettier の 80 ではなく **100**。`fmt.lineWidth` で変えます。
+
+この主張は主張ではなく検査されています。`uf_fmt` のすべてのフィクスチャは同じ入力に対する Prettier の出力とバイト単位で比較されます。
+
+### タグ付きテンプレートの GraphQL
+
+`graphql` / `gql` / `graphql.experimental` タグ、`graphql(…)` に渡したテンプレート、`/* GraphQL */` コメントの後ろのテンプレート内の GraphQL をフォーマットし、周りのコードに再インデントします。uf が再印字しないテンプレートには触れません（`#` コメント、制御文字を含む文字列、GraphQL でない、128 段を超えるネスト）。GraphQL が uf の読む唯一の埋め込み言語で、`css` `html` `sql` `markdown` テンプレートは書かれたまま出ます。
+
+uf が意見を持たないファイル（JSON、CSS、TypeScript）は Biome に渡されます。uf はプロジェクトが持つバイナリを走らせ、自分では出荷しません。`fmt.nonFlow.formatter` で別のもの（Prettier）か `"none"` を名指せます。インストールされていなければ、そう言って放置したファイルを名指しし、それは失敗ではなく警告です（uf が Biome を選び、あなたは選んでいないから）。`fmt.nonFlow.formatter` を書けば答えが変わり、名指ししたのにないフォーマッタは実行を失敗させます。
+
+計測（133 kB の Flow + JSX ファイル）: パースのみ 10.4 ms、パースとフォーマット 17.9 ms、`--check` 18.0 ms。パーサーが 58%。目標はエンドツーエンド 10 MB/s。
+
+パス引数は部分文字列フィルタで、glob 言語ではなく、何にもマッチしなければ黙って通らずエラーです。
+
+## uf lint
+
+uf のルール、Flow 自身の lint、公式 React Compiler の診断を一緒に走らせ、1 つのリストを印字します。`--json` で機械可読に。
+
+Flow の組み込み lint（`sketchy-null` `unclear-type` `deprecated-type` `unnecessary-optional-chain` など）は別の `.flowconfig` セクションではなく `uf.config.js` で uf のルールと並べて設定します。「ここではこれがエラー」が書かれる場所は 1 つであるべきだから。
+
+```sh
+uf lint --rules   # lint する代わりに全ルールを列挙: このプロジェクトでのレベル、修正するコマンド、何をチェックするか
+```
+
+ガイド上のリストではなくこれを読んでください。ガイドに書かれたルール名や数はルールが追加された日に古くなり、コマンドは古くなりません。
+
+### React のルールは React Compiler から来る
+
+`react-compiler/*` ルールは公式 React Compiler 自身の診断で、uf が書いたチェックではありません。`uf lint` は `uf build` が走らせるコンパイラ（`facebook/react` から公開される `react_compiler`）を lint モードで、`eslint-plugin-react-hooks` が与えるオプションで走らせます。
+
+| ルール | レベル | コンパイラが報告するもの |
+| --- | --- | --- |
+| `react-compiler/hooks` | error | Rules of Hooks |
+| `react-compiler/purity` | error | 描画中に呼ばれた既知の不純な関数 |
+| `react-compiler/globals` | error | コンポーネント外の変数が描画中に変更された |
+| `react-compiler/immutability` | error | props、state、React が不変扱いする値の変異 |
+| `react-compiler/refs` | error | 描画中の ref の読み書き |
+| `react-compiler/set-state-in-effect` | error | effect 内での同期的な setState |
+| `react-compiler/set-state-in-render` | error | 描画中の setState |
+| `react-compiler/static-components` | error | 描画中に作られたコンポーネント |
+| `react-compiler/error-boundaries` | error | エラー境界の代わりに try/catch 内で組まれた JSX |
+| `react-compiler/preserve-manual-memoization` | error | コンパイラが保てない useMemo / useCallback |
+| `react-compiler/use-memo` / `void-use-memo` | error | async / generator / 引数あり、または何も返さない useMemo コールバック |
+| `react-compiler/memo-dependencies` | warn | useMemo / useCallback の依存配列の過不足 |
+| `react-compiler/incompatible-library` | warn | メモ化を壊すと知られた API |
+| `react-compiler/unsupported-syntax` | warn | コンパイラがサポートしない構文 |
+| `react-compiler/exhaustive-effect-dependencies` | off | effect の依存配列の過不足 |
+| `react-compiler/no-deriving-state-in-effects` | off | props や state から effect で導出された値 |
+| `react-compiler/capitalized-calls` など | off | |
+
+レベルは `eslint-plugin-react-hooks` の `recommended-latest` プリセットがそのカテゴリに与えるものです。`hooks` と `memo-dependencies` の 2 つだけ違い、プリセットではオフですが uf はオンにしています。プラグインは古典的な `rules-of-hooks` / `exhaustive-deps` で同じ問いに 2 度答え、uf にはコンパイラの答えしかないからです。`app.builtins.reactCompiler.enabled` に関係なく走ります。
+
+以前 uf 自身が書いていた React ルール（`react/hooks-rules` など）は消え、id はコンパイラのルールの非推奨綴りとして動きます。
+
+### lint 実行が教えること
+
+```json
+{
+  "command": "uf lint",
+  "filesChecked": 1,
+  "errors": 0,
+  "warnings": 0,
+  "diagnostics": [],
+  "unavailableRules": []
+}
+```
+
+`diagnostics` はアノテーションになるべきリスト。`errors` と `warnings` は CI が分岐すべき合計。`filesChecked` は狭すぎたパスフィルタへのガード。`unavailableRules` は契約の一部で、推論が必要で走れなかったルールは黙って消えずに名指しされます。
+
+`uf explain lint --json` は別の問い（誰の仕事が実行に入っているか）に答えます。
+
+### 見つけたものを直す
+
+```sh
+uf lint --fix          # 尋ねずに適用してよい全修正
+uf lint --fix-unsafe   # 正しさがルールの検査できないものに依存する修正も
+```
+
+2 層あり、差は本物です。`--fix` はプログラムの意味が変わらない修正だけ（`bool` → `boolean`）。`--fix-unsafe` は `export let count = 0` を `export const count = 0` にするような、パースも整形も通るが何かが再代入していれば実行時に throw するものも。**コミット前にその diff を読んでください。**
+
+ほとんどのルールには修正がなく、意図的です。`flow/unclear-type` は `any` を `mixed` にも opaque 型にも生成されたルーター型にもでき、3 つの答えは答えなしで、推測は見える場所に残すより悪い。
+
+書かれたものはパースし、2 度走らせるのは 1 度と同じです。修正前に `uf fmt --check` を通っていたファイルは修正後も通ります。
+
+### プロジェクトルール
+
+チームが書くルールは `plugins` に列挙し `lint.rules` でオンにする JavaScript モジュールです。形は ESLint のものなので、すでにあるルールはほぼそのまま移ります。
+
+<Figure title="uf.config.js">
+
+```js
+export default {
+  plugins: ["./rules/acme.js"],
+  lint: { rules: { "acme/no-foo": "error" } },
+};
+```
+
+</Figure>
+
+<Figure title="rules/acme.js">
+
+```js
+export default {
+  name: "acme",
+  rules: {
+    "no-foo": {
+      meta: { messages: { reserved: "`{{ name }}` is reserved for the build" } },
+      create(context) {
+        return {
+          Identifier(node) {
+            if (node.name === "foo") {
+              context.report({ node, messageId: "reserved", data: { name: node.name } });
+            }
+          },
+        };
+      },
+    },
+  },
+};
+```
+
+</Figure>
+
+ルールが得るもの: ESTree ノードタイプでキーされたリスナー（`:exit` つき）、`context.report`、`context.sourceCode`、`meta.fixable` を設定したルールだけの `fix`。木は uf 自身の Flow パーサーが生んだものなので、型注釈や component 構文も普通のノードです。**ないもの**: スコープ解析、トークンリスト、`context.options`。`getScope` を呼ぶルールは throw し、throw したルールはレポートで名指しされます。
+
+ルールはプロジェクトの JS ホスト上の 1 ワーカーで走り、プロジェクトルールがオンのときだけ起動します。プラグイン読み込みに 30 秒、ファイルごとに 5 秒。`meta.fixable: "whitespace"` の修正は `--fix` で、`"code"` は `--fix-unsafe` だけで適用されます。
+
+### ESLint から来る人へ
+
+公式ページには `eslint-plugin-react` `eslint-plugin-react-hooks` `eslint-plugin-jsx-a11y` `eslint-plugin-import` の全ルールと uf での対応表があります。答えの種類:
+
+- **uf ルール名** — 同じ問いに答える uf のルール（例: `no-danger` → `security/no-dangerously-set-inner-html`、`jsx-key` → `react/jsx-key`、`alt-text` → `a11y/alt-text`、`no-cycle` → `import/no-cycle`）
+- **Flow** — `uf check` の型推論が報告するので lint ルールが推測する必要がない（`prop-types` 系、`named` / `default` / `no-unresolved`）
+- **uf fmt** — レイアウトはフォーマッタが決める（`jsx-indent` など 16 ルール）
+- **React Compiler** — uf がコンポーネントをコンパイルし、ルールが hoist や wrap させるものをメモ化する（`jsx-no-bind` など）
+- **不要** — uf プロジェクトに存在しない（`react-in-jsx-scope`、`jsx-filename-extension`、webpack 構文）
+- **予定なし** — クラスコンポーネントとライフサイクルのルール
+- **プロジェクトルール** — 欠陥ではなくチームの慣習（`jsx-sort-props` など）。uf は慣習をデフォルトで出荷しない（#974）
+- **まだ** — 追跡 issue のある未対応
+
+`a11y/*` がプラグインと違う答えをするときは常に同じ方向です。**尋ねているものが見えないルールは何も言わない。** props を spread する要素は属性を通しているかもしれないので報告しません。ARIA テーブルは `aria-query` から生成され、axe-core が仕様より寛容な場所では仕様に従います。
+
+## uf check
+
+`uf check` はこのページのリンタを走らせ、次に Flow の型推論を走らせるので、ここでのすべての lint の発見は check も失敗させます。推論の半分は [型チェック](/toolchain/check)。
+
+## CI で
+
+```sh
+uf fmt --check && uf lint && uf check && uf test
+```
+
+4 コマンド、設定なし、それぞれ然るべきときに非ゼロで終了します。もっとも安い失敗を先にしたいならこの順で。CI がジョブに分かれているなら、check が lint を含んでも fmt と lint は別に保ってください。より良いのは一度名前を付けることです。
+
+```js
+export default defineConfig({
+  tasks: {
+    "fmt:check": "uf fmt --check",
+    lint: "uf lint",
+    check: "uf check",
+    test: "uf test",
+    ci: { command: "echo ok", dependsOn: ["fmt:check", "lint", "check", "test"] },
+  },
+});
+```
+
+パイプラインにあって `uf.config.js` にないチェックは、コントリビュータが push 前に走らせられないチェックです。

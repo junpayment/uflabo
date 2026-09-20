@@ -1,0 +1,171 @@
+---
+title: "Server Components"
+description: "uf アプリのすべてのモジュールは、そう言わない限りサーバーのもの。\"use client\" がそう言う方法で、その価値は慣習ではなくグラフが決める。"
+section: "app"
+order: 5
+source: "/guide/server-components"
+---
+
+import { Callout } from "../../_design/Callout.js";
+import { Figure } from "../../_design/Figure.js";
+
+<Callout kind="note" title="必要な React">
+Server Components には React 19.3 以降と、同じリリースの `react-dom` と `react-server-dom-parcel` が必要です。`@uniflowed/router` 自体は Expo SDK 57 / React Native 0.87 が出荷する React 19.2.3 の横にインストールでき、ネイティブアプリはこれらを必要としません。古い React では `uf dev` / `uf build` は描画前に止まり、見つけた React を名指しします。
+</Callout>
+
+## 現在の契約
+
+ルートはデフォルトで React Server Components として描画されます。
+
+| 領域 | 今日 | まだないもの |
+| --- | --- | --- |
+| ディレクティブの解析 | `"use client"` と `"use server"` を React やバンドラと同じ directive prologue ルールで読む | なし |
+| 診断 | 不正なディレクティブ、client グラフ内の server 専用 import、server モジュール内の client API を名指し | カスタム hook を呼び出すブラウザ API に結び付けること |
+| 分割 | Server Component はブラウザに届かない。ブラウザは描画したペイロードと、それが名指す `"use client"` モジュールを得る | なし |
+| HTML ストリーミング | ドキュメントはストリームし、Flight ペイロードを運ぶ。Suspense 境界は同じレスポンスの後続行から解決 | なし |
+| ナビゲーション | `<route>/__uf.flight` から次のルートのペイロードを取得 | インターセプトルート |
+| Server Actions | `"use server"` モジュールの export async 関数は id で呼べる | インラインアクション参照、prop としてのサーバー関数、ネイティブフォームの progressive enhancement |
+
+`uf.config.js` の `app.rsc: false` でモデルをオフにできます。ルートはモジュールから描画され、ブラウザはそれを再描画してハイドレートします（#519 以前のすべての uf アプリの挙動）。
+
+## 3 種類のモジュール
+
+モジュールの環境は最初の文だけで決まります。
+
+| 最初の文 | 環境 | 意味 |
+| --- | --- | --- |
+| なし | Server | Server Component か普通のサーバーコード。デフォルト |
+| `"use client";` | Client | クライアントバンドルのルート。そのコードはブラウザのもので、import するものすべてが付いてくる |
+| `"use server";` | Server actions | すべての export はブラウザが id で呼べる関数 |
+
+ディレクティブは ECMAScript の directive prologue ルールで尊重されます。UTF-8 BOM、`#!` 行、コメント、空行はその前にあってよい。素の文字列リテラルでなければならず、テンプレートリテラルや連結は違う。`;` か改行かブロックを閉じる `}` かファイル末で終わる。引用符の中はバイト単位で比較（スペース 2 つの `"use client"` は普通の文字列文）。
+
+**uf が尊重できないディレクティブは、無視ではなく報告されます。** ファイルの下の方の `"use client"`、連結で組まれたもの、両方を宣言するモジュール、関数本体内の `"use client"`。それぞれが名前付きの診断です。黙って落とすことは、「Client Component だと作者が信じたモジュールがサーバーだけで描画される」バグの作り方だからです。
+
+関数本体の先頭の `"use server"` は別の、サポートされた構文です。そのクロージャ 1 つをアクションとしてマークします。
+
+## 境界は import
+
+<Figure title="app/counter/$page.js">
+
+```js
+// @flow
+import * as React from "@uniflowed/react";
+import Counter from "./_components/Counter.js";
+
+export default component CounterPage() {
+  return (
+    <section>
+      <h1>rsc-split-app counter</h1>
+      <Counter />
+    </section>
+  );
+}
+```
+
+</Figure>
+
+<Figure title="app/counter/_components/Counter.js">
+
+```js
+"use client";
+// @flow
+import * as React from "@uniflowed/react";
+import { useState } from "@uniflowed/react";
+
+export default component Counter() {
+  const [count, setCount] = useState<number>(0);
+  return (
+    <button type="button" onClick={() => setCount(count + 1)}>
+      {count}
+    </button>
+  );
+}
+```
+
+</Figure>
+
+その import が境界です。サーバーモジュールが `"use client"` モジュールを import する。`"use client"` モジュールはクライアントバンドルのルートになり、解析はその辺を記録します。
+
+## グラフが決めること
+
+プロジェクトの全モジュールについて、解析は 4 つの問いに答えます。
+
+| 問い | 答え |
+| --- | --- |
+| どの環境で走るか | server, client, server-actions |
+| どちらの半分から到達されるか | unreachable, server-only, client-only, server-and-client |
+| 定義するクロージャがブラウザに越えられるか | isolated, reaches-boundary |
+| ブラウザはこれを評価しなければならないか | `"use client"` を宣言するなら yes、境界に到達するなら yes |
+
+最後が分割です。境界に到達しないモジュールの下は決してブラウザで描画されないので、その下は出荷する必要がありません。**これが uf が今日行う分割のすべて**です。
+
+## 分割はルート単位
+
+`uf build` は、ルートのページ・レイアウト・`$loading.js`・`$template.js`・カバーする not-found / error 境界のどれからもクライアント境界に到達できないとき、そのルートのページをクライアントルートテーブルから落とします。
+
+知っておくべき 3 つの性質:
+
+- **落とされたルートはハイドレートされず、そこへの `Link` はドキュメント遷移。** クライアントルーターが描画するページがないので、ブラウザはドキュメントを取得します。
+- **落とされたページも副作用のために import される。** `uf build` はクライアントモジュールグラフで見つけたスタイルシートをリンクするので、ルートを丸ごと外すとそのルールが全ページから消えます。import は残り、何も読まれず、コードは tree-shake されます。
+- **不明なら出荷する。** 解析は `.js` をスキャンします。`.mdx` のページ、`.jsx`、サイズ制限を超えたファイルはマニフェストになく、「見たことのないモジュール」の誠実な読み方は「境界に到達するかもしれない」です。
+
+## 何が動いたか見る
+
+`uf dev` は保存のたびに解析を再実行し、前回のスキャンからクライアントバンドルを越えて動いたものを **client bundle** 見出しの下で報告します。入ったモジュールはそこへ至る最短 import チェーン（`app/counter/$page.js imports app/counter/_components/Counter.js, which declares "use client"`）とともに名指しされます。
+
+`uf build` のサマリ:
+
+```
+  modules            11
+  client components  3
+  server actions     0
+  rsc diagnostics    0
+```
+
+分割が何かを外したときだけ `pages in the client bundle 2 of 5` の行が加わります。`.uf/build/meta/uf-rsc-manifest.json` がモジュールごとの決定を運びます。
+
+## 報告するもの
+
+以下はすべてエラーで、`uf build` はバンドラを走らせる前に印字して失敗します。最後の行だけが例外です。
+
+| ルール | 意味 |
+| --- | --- |
+| `rsc/server-only-import-in-client` | client グラフが到達するモジュールが `@uniflowed/db` `@uniflowed/server` `server-only`、そのサブパス、または `*.server.js` を import。メッセージはクライアント境界からそのモジュールまでの import チェーンを名指しする |
+| `rsc/client-only-api-in-server` | Server Component が `useState` `useEffect` `createContext` などを呼ぶか、`window` `document` `localStorage` などを読む |
+| `rsc/client-only-hook-in-server` | Server Component が `@uniflowed/hooks` がブラウザ専用と宣言する hook を呼ぶ |
+| `rsc/server-action-not-async` | React が呼べない `"use server"` export（async 関数でない） |
+| `rsc/server-action-not-a-function` | 関数でないものを export する `"use server"` モジュール |
+| `rsc/import-escapes-project-root` | プロジェクト外に解決する import |
+| `rsc/directive-not-in-prologue` | モジュールの最初の文でないディレクティブ |
+| `rsc/directive-not-a-string-literal` | テンプレートリテラルや連結で組まれたディレクティブ |
+| `rsc/conflicting-directives` | 両方を宣言するモジュール |
+| `rsc/client-directive-in-function` | 関数本体内の `"use client"` |
+| `rsc/unclassified-hook-in-server` | **警告。** チェックは名前でマッチし、この hook はどのリストにもない |
+
+最後の行は解析の中で唯一「判定」ではなく、「解析がここで止まった」という宣言です。client-only チェックは識別子を 2 つの名前リストと照合するので、Server Component 内の `useState` は捕まり、`useContext` の上に組まれた `useRoute` は捕まらず、自作 hook も捕まりません。きちんと決めるには export をその本体が到達する API に結び付ける必要があり、それが #388 です。それまでは、沈黙（「チェック済みで問題なし」と読める）より問いを出力する方が誠実です。
+
+`uf dev` も同じリストを印字し、終了コードは変えません。契約違反でモジュールの配信を拒否する dev サーバーは、違反を直すのに使えない dev サーバーです。
+
+## uf lint の位置
+
+4 つの lint ルールがこの境界についてです。1 ファイルずつ、テキストで、グラフなしに読みます。だから git hook でステージ済みファイルに走らせられ、だから上の解析の代替ではありません。
+
+| ルール | マッチするもの |
+| --- | --- |
+| `server/no-server-only-import-in-client` | `"use client"` モジュールが `@uniflowed/server` か `*.server.js` を import |
+| `server/no-client-secret` | `"use client"` モジュール内の `SECRET` / `PRIVATE_` を含む行 |
+| `server/use-client-directive-position` | モジュールの最初の文でない境界ディレクティブ |
+| `server/use-server-actions` | `server/` 配下か `*.server.js` で `serverAction` を含むのに `"use server";` で始まらないモジュール |
+
+## ここにないもの
+
+**どう組まれているか。** uf アプリは 3 つのモジュールグラフで、それぞれが Vite の environment です。`rsc`（ルートテーブルと全 server component）、`ssr`（ペイロードを HTML に描画し、全 client モジュールのサーバー側コピーを持つ）、`client`（ペイロードをハイドレートし、client モジュールだけを持つ）。rsc グラフでは `"use client"` モジュールは export ごとの client reference に置き換わります。
+
+**プロジェクトに求めること:**
+
+- `$error.js` は client モジュール。エラー境界はブラウザで描画中の throw を捕まえるので、`"use client"` のない境界モジュールは拒否される
+- client モジュールは export を名指しする。`export * from` は拒否される
+- server component の編集は `uf dev` でページをリロードする。ブラウザは server component のモジュールを持たないので Fast Refresh が置き換えるものがない
+
+**ないもの:** client component に prop として渡すサーバー関数、インライン `"use server"` クロージャ、RSC 下でのインターセプトルート（#1038）。

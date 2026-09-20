@@ -1,0 +1,55 @@
+---
+title: "uflabo — uf（Uniflowed）日本語解説"
+description: "Flow で書く React のための統合ツールチェーン「uf」を、日本語でまるごと解説するサイト。"
+section: "intro"
+order: 0
+---
+
+import { Callout } from "./_design/Callout.js";
+
+<div className="hero">
+<p className="eyebrow">Unified toolchain for Flow</p>
+<h1>uf（Uniflowed）を<br />日本語で理解する</h1>
+<p className="lede">uf は、<strong>Flow で書く React アプリ</strong>のために dev サーバー・ビルド・テスト・フォーマッタ・リンタ・型チェックを <strong>1 つのバイナリと 1 つの設定ファイル</strong>にまとめた、開発途中のツールチェーンです。このサイトは <a href="https://docs.uniflowed.dev/" target="_blank" rel="noopener">公式ドキュメント（英語）</a>の内容を、日本語で噛み砕いて解説します。</p>
+</div>
+
+<Callout kind="warn" title="まず知っておくこと">
+uf は **0.0.0-alpha** のプレリリースです。インターフェースは予告なく変わり、npm の `@uniflowed/*` パッケージはすべて `alpha` タグのプレリリースとして公開されています。公式ドキュメント自身が「何ができて、どこで既存ツールに負けているか」を率直に書いているのが特徴で、このサイトもその姿勢をそのまま日本語にしています。
+</Callout>
+
+## 30 秒でわかる uf
+
+```sh
+curl -fsSL https://setup.uniflowed.dev | sh   # バイナリを 1 つ入れる
+uf new my-site                                # プロジェクトを作る
+cd my-site && uf install                      # 依存を入れる（npm/pnpm/yarn/bun を裏で呼ぶ）
+uf dev                                        # Vite ベースの dev サーバー
+```
+
+- **言語は Flow。** `component` / `hook` / `renders` / `match` / `enum` という、React を記述するために Flow が追加した構文を、Babel なしでネイティブに扱います。
+- **1 バイナリ、1 設定ファイル。** `vite.config.ts` も `babel.config.js` も `.eslintrc` も `tsconfig.json` も `vitest.config.ts` もありません。あるのは `uf.config.js` だけです。
+- **バンドラは Vite そのもの。** uf は Vite をフォークせず、Rust 側で設定を組み立てて Vite を「運転」します。Vite プラグインはそのまま使えます。
+- **フレームワークでもある。** ファイルシステムルーティング、Server Components、Server Actions、ストリーミング SSR、7 種類のデプロイアダプタ、単一実行ファイルへのコンパイルまで含みます。
+
+## どこから読むか
+
+<ul className="cards">
+<li><a href="/intro/overview"><strong>全体像をつかむ</strong><small>uf が何で、何ではないか。パイプラインの構造と、このサイトの読み方。</small></a></li>
+<li><a href="/why/what-is-uf"><strong>採用を検討している</strong><small>「1 つのツールチェーン」という主張と、その代償。TypeScript に負ける行、Next.js に負ける行。</small></a></li>
+<li><a href="/start/install"><strong>とにかく動かしたい</strong><small>インストール、最初のプロジェクト、エディタ設定、そしてチュートリアル。</small></a></li>
+<li><a href="/app/routing"><strong>アプリを作りたい</strong><small>ルーティング、レンダリングモード、RSC、Server Actions、状態管理、フォーム。</small></a></li>
+<li><a href="/targets/deploy"><strong>どこで動かすか</strong><small>サーバー、静的ホスト、単一バイナリ、React Native、ターミナル。</small></a></li>
+<li><a href="/toolchain/dev-build"><strong>運用・CI を組みたい</strong><small>各コマンドの中身、依存管理、ランタイム固定、タスク、CI レシピ、MCP。</small></a></li>
+<li><a href="/toolchain/migrate"><strong>既存アプリを移したい</strong><small>CRA / Vite / Next.js からの移行手順と、移行後も残る差分。</small></a></li>
+<li><a href="/reference/cli"><strong>コマンドを調べたい</strong><small>サブコマンド一覧、設定キー、パッケージ一覧、標準ライブラリ。</small></a></li>
+</ul>
+
+## 1 ページだけ読むなら
+
+[uf がやらないこと](/why/not-do) を読んでください。公式ドキュメントも同じことを言っています。「1 か月使ってから気づく制限は、その 1 か月を無駄にする」ので、意図的な「拒否」と単なる「未実装」を issue 番号つきで先に並べたページです。TypeScript を書いていて Flow に移る理由が特にない人には、[Flow と TypeScript](/why/flow-vs-typescript) の「どう決めるか」の節が答えになるはずです。
+
+## このサイトについて
+
+- 元にしたのは 2026 年 9 月時点の [docs.uniflowed.dev](https://docs.uniflowed.dev/) です。各ページ末尾に元ページへのリンクがあります。
+- 訳語は、コマンド名・設定キー・パッケージ名・ファイル名は原文のまま、概念は日本語にしています（例: route handler → ルートハンドラ、loader → ローダー）。
+- 非公式です。uf 本体は [ubugeeei-prod/uf](https://github.com/ubugeeei-prod/uf) で開発されています。

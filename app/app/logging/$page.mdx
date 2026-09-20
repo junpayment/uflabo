@@ -1,0 +1,92 @@
+---
+title: "ロギング"
+description: "人が読む行とログ集約器が読む行は別の行で、両方を持つ方法はレコードを組んで 2 度フォーマットすること。すべてのリクエストは到着時に id を得る。"
+section: "app"
+order: 16
+source: "/guide/logging"
+---
+
+## 何か言う
+
+```js
+// @flow
+import { logger } from "@uniflowed/server";
+
+export async function loader({ params }: LoaderArgs) {
+  const order = await findOrder(params.id);
+  if (order == null) {
+    logger().warn("order not found", { orderId: params.id });
+  }
+  return order;
+}
+```
+
+`logger()` は、このリクエストの id とマッチしたルートがすでに乗ったプロセスロガーなので、描画の 6 階層下で書かれた行も原因のリクエストに結合できます。**メッセージは定数で、変わるものはすべてフィールド。** `order not found` with `orderId=8813` は数えられるもので、「order 8813 not found」は grep しかできないものです。
+
+`cookies()` `headers()` `requestId()` と違い、リクエスト外でも throw しません。あの 3 つはリクエストについて答えるもので、リクエストなしには誠実な答えがありません。ロガーはどちらでも同じ答え（id が抜けるだけ）です。失敗経路から呼べない唯一の呼び出しがログだというパッケージは逆さまです。
+
+## リクエスト id
+
+```js
+// @flow
+import { requestId } from "@uniflowed/server";
+
+export default function ErrorPage() {
+  return <p>Something went wrong. Quote {requestId()} if you get in touch.</p>;
+}
+```
+
+リクエスト到着時に作られ、リクエストコンテキストに住むので、飛んでいる 2 つのリクエストは互いのものを見られません。モジュールレベル変数が負荷時にだけ持つ失敗です。
+
+これを読むのは `cookies()` と同じくリクエスト状態の読み取りに数えるので、ドキュメントに入れる描画は uf がルートキャッシュに入れない描画です。`logger()` は数えません。ログ行に届いた id はドキュメントを個人的にしていないからです。
+
+uf は id を生成し、決してリクエストから取りません。クライアントが送った `X-Request-Id` は百万リクエストで同一であり得て、id が存在する唯一の目的を打ち消し、ログ行に着地します。
+
+## リクエストが残す行
+
+すべてのリクエストはレスポンスの後に 1 行を書き、保つ価値を生むフィールドはルートです。
+
+```
+11:41:15.638 info  request requestId=37f84251-… method=GET path=/orders/8813 route=/orders/:id status=200 durationMs=12
+```
+
+パスのログは `/orders/8813` が遅いと言います。ルートのログは `/orders/:id` が遅いと言い、それがあなたが実際に持つ問いです。ルートは `@uniflowed/router` がマッチしたもので、何にもマッチしなかったリクエスト（静的アセット、404、ガードが拒否したもの）では `null`。
+
+**クエリ文字列は決して入りません。** そこには戻りパス、検索語、署名付きダウンロード URL、OAuth の code と state が全部住み、この行を書くホストはどのルートをログしているか知りません。
+
+レベルはステータスから: 500 以上で `error`、400 で `warn`、それ以外 `info`。だから `UF_LOG_LEVEL=warn` は間違ったリクエストだけを残します。
+
+## フォーマットとレベル
+
+| 変数 | 値 | デフォルト |
+| --- | --- | --- |
+| `UF_LOG_LEVEL` | `debug` `info` `warn` `error` `silent` | `info` |
+| `UF_LOG_FORMAT` | `json` `text` | `NODE_ENV=production` なら `json`、それ以外 `text` |
+
+レベルでない名前は沈黙ではなく `info` にフォールバックします。デプロイ環境のタイポが、インシデントが痕跡を残さなかった理由であってはなりません。
+
+出力はすべてのレベルで `console.error` へ。`uf start` / `uf preview` を走らせるプロセスでは stdout が `@uniflowed/vite` の JSON 制御チャネルで、Node の `console.info` はそこに書くので、レベルでストリームを選ぶとプロトコルの真ん中にログ行が入ります。
+
+## 別の場所へ送る
+
+```js
+// @flow
+import { createLogger, installLogger } from "@uniflowed/server/log";
+
+installLogger(
+  createLogger({
+    level: "info",
+    sink: (record) => myCollector.send(record),
+  }),
+);
+```
+
+以後 uf が書くすべての行がそこへ行きます。描画の中から書かれたものも。テストには `recordingLogger()` がロガーと集めたレコードの配列を返します。
+
+レコードの時刻は `Temporal.Instant` で、`Date.now()` ではなく `@uniflowed/core/temporal` から読みます。`setClock` で時計を入れれば、その下で刻印されたレコードはあなたが設定した通りを言います。`durationMs` は両端で同じ時計で計測されるので、1500 ms 進めた `manualClock` は `durationMs=1500` を報告します。
+
+## ログ行が運んではならないもの
+
+**資格情報。** それを名指すフィールド名（`accessToken` `client_secret` `Set-Cookie` `password` など）はあらゆる深さで `[redacted]` に置き換えられます。値のテストではなく名前の表なのは意図的で、「JWT っぽい」認識は信用できない入力への正規表現であり、一度見逃せばトークンを公開しています。`code` は意図的にリダクトされません。認可コードであるよりずっと多く `ECONNRESET` だからです。
+
+**第 2 のレコード。** すべての文字列は制御文字を失い、固定長に切られてからフォーマットされます。パスやユーザーエージェントはクライアントが選んだテキストで、その中の改行は自分のレコードを閉じて捏造されたレコードを開きます。それがログが「起きなかったことの証拠」になる道です。

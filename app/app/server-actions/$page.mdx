@@ -1,0 +1,235 @@
+---
+title: "Server Actions"
+description: "use server\" の export は、ブラウザがネットワーク越しに呼べる関数。ビルドに含まれた瞬間から公開 HTTP エンドポイントだ。"
+section: "app"
+order: 7
+source: "/guide/server-actions"
+---
+
+import { Figure } from "../../_design/Figure.js";
+
+このページは「何を書くか」と同じくらい「uf が何を拒否するか」についてです。引数が収まらなければならない文法、エンドポイントとクロスサイト呼び出しの間に立つ 3 つの独立したもの、そして uf が与えられない 1 つの保証。**呼び出した者に権限があったかどうか**です。
+
+## 書く
+
+最初の文が `"use server";` のモジュール。すべての export がアクションで、すべての export は async 関数でなければなりません。
+
+<Figure title="app/counter/_actions/tally.js">
+
+```js
+"use server";
+// @flow
+import { cookies } from "@uniflowed/server";
+import { tallyFor } from "./ledger.js";
+
+/** カウントを記録し、サーバーがそれをどう解釈したかを返す。 */
+export async function recordCount(count: number): Promise<{|
+  readonly total: number,
+  readonly visitor: string,
+|}> {
+  return {
+    total: tallyFor(count),
+    visitor: cookies().get("visitor") ?? "anonymous",
+  };
+}
+```
+
+</Figure>
+
+このファイルの要点は 2 つ。`cookies()` は `node:async_hooks` を import する `@uniflowed/server` から来ます。`./ledger.js` はディレクティブのない普通のモジュールで、本物のアクションが手を伸ばすデータベースハンドルの代わりです。**どちらもブラウザに届きません。** `@uniflowed/vite` はクライアントビルドにこのファイルの代わりの生成モジュール（呼べる export ごとに 1 つの参照）を答えるので、本体と import と、それらだけが到達したものはすべて書かれた場所に留まります。
+
+## 呼ぶ
+
+普通の import と普通の呼び出しです。
+
+<Figure title="app/counter/_components/Counter.js">
+
+```js
+"use client";
+// @flow
+import * as React from "@uniflowed/react";
+import { useState } from "@uniflowed/react";
+import { recordCount } from "../_actions/tally.js";
+
+export default component Counter() {
+  const [count, setCount] = useState<number>(0);
+  const [recorded, setRecorded] = useState<string>("");
+  return (
+    <div>
+      <button type="button" onClick={() => setCount(count + 1)}>add one</button>
+      <button
+        type="button"
+        onClick={() => {
+          void recordCount(count).then((answer) => {
+            setRecorded(`${String(answer.total)} ${answer.visitor}`);
+          });
+        }}
+      >
+        record
+      </button>
+      <output>{recorded}</output>
+    </div>
+  );
+}
+```
+
+</Figure>
+
+サーバーではその import は関数です。ブラウザでは参照（`createServerReference(id, "app/counter/_actions/tally.js#recordCount")`）で、id と fetch です。あなたが書くことはありません。
+
+**Flow はモジュールを読み、参照は読みません。** バンドラの置換はチェッカーには見えないので、`recordCount("nine")` は空の 400 ではなく `uf check` のエラーになります。
+
+## フォーム
+
+参照は普通の async 関数なので、React 19 のフォーム API が求めるものはそれで全部です。
+
+<Figure title="app/counter/_actions/notes.js">
+
+```js
+"use server";
+// @flow
+import { maxLength, minLength, object, pipe, safeParse, string, trim } from "@uniflowed/validator";
+import { put } from "@uniflowed/validator/plain-object";
+
+const Note = object({ note: pipe(string(), trim(), minLength(1), maxLength(80)) });
+
+export type NoteState = {| readonly saved: string | null, readonly problem: string | null |};
+
+export async function submitNote(previous: NoteState, form: FormData): Promise<NoteState> {
+  const fields: { [string]: string } = {};
+  for (const [name, value] of form.entries()) {
+    if (typeof value === "string") put(fields, name, value);
+  }
+  const parsed = safeParse(Note, fields);
+  if (!parsed.ok) {
+    return { saved: previous.saved, problem: "a note is 1 to 80 characters" };
+  }
+  return { saved: parsed.value.note, problem: null };
+}
+```
+
+</Figure>
+
+<Figure title="app/counter/_components/NoteForm.js">
+
+```js
+"use client";
+// @flow
+import * as React from "@uniflowed/react";
+import { useActionState } from "@uniflowed/react";
+import { useFormStatus } from "react-dom";
+import { type NoteState, submitNote } from "../_actions/notes.js";
+
+const NO_NOTE: NoteState = { saved: null, problem: null };
+
+component SaveNote() {
+  const { pending } = useFormStatus();
+  return <button type="submit" disabled={pending}>save note</button>;
+}
+
+export default component NoteForm() {
+  const [note, saveNote] = useActionState<NoteState, FormData>(submitNote, NO_NOTE);
+  return (
+    <form action={saveNote}>
+      <input name="note" maxLength={80} defaultValue="" />
+      <SaveNote />
+      <output>{note.saved ?? note.problem ?? ""}</output>
+    </form>
+  );
+}
+```
+
+</Figure>
+
+スキーマがサーバーにあるのは、そこだけがチェックである唯一の場所だからです。`<input required maxlength="80">` は打つ人への便宜で、関数に届いたリクエストはそのドキュメントから作られたとは限りません。
+
+拒否された submit は例外ではなく状態上の値です。エンドポイントは throw したアクションに空の 500 で答え、「メモが長すぎます」は内部エラーではありません。
+
+**ページがハイドレートする前に送信されたフォームは動きません。** React のフォームストーリーのうち uf が持たない 1 つで、意図的なトレードです（下記）。
+
+## 越えられるもの
+
+サーバーアクションの引数は素の JSON データ、加えて最大 1 つのフォームです。`{"args": [...]}` 1 オブジェクト、有効な UTF-8。各値は `null`、boolean、有限数、文字列、それらの配列、または普通の文字列キーの素のオブジェクト。
+
+| 上限 | 値 |
+| --- | --- |
+| リクエスト body | 1 MiB |
+| 位置引数 | 16 |
+| ネスト深さ | 24 |
+| 1 ペイロードの値の数 | 10,000 |
+| 1 フォームのフィールド数 | 256 |
+| フォームフィールド名の長さ | 128 |
+
+拒否されるもの、それぞれ理由つき:
+
+- **関数、シンボル、bigint、引数としての `undefined`。** JSON に綴りがない。
+- **`NaN` と無限。** `JSON.stringify` は `null` を書くので、受け付けると呼び出し側が渡した数と違う数で呼ばれる。
+- **クラスインスタンス、Map、Set、Date、RegExp、typed array、React 要素。** それぞれ「呼ぶコンストラクタを名指すタグ」をペイロードに必要とし、コンストラクタを名指すタグはすべてのデシリアライズ CVE の材料。日付が欲しいアクションは ISO 文字列を取ってパースする。
+- **キーとしての `__proto__`、`constructor`、`prototype`。** `JSON.parse` 自体は汚染しないが、それを spread / merge するアプリコードの最初の行で汚染になる。全アクションが覚えるより 1 か所で拒否。
+- **自分自身を参照する値、同じオブジェクトへの 2 度の参照。**
+- **フォーム内のファイル。** アップロードはコンテントタイプ、ストリーミング読み、サイズ制限を欲し、それはこのモジュールのものではない。
+- **1 呼び出しに 2 つ目のフォーム。**
+- **シンボルキー。**
+
+同じ文法が両側で走るので、ブラウザはサーバーが拒否するものを送ることを拒否します。悪い引数は `argument 2.createdAt is a class instance …` としてコンポーネントに届くスタックとともに呼び出し側で throw されます。
+
+## 呼び出しとエンドポイント
+
+ページ自身の URL への POST。`uf-action: <id>`、`content-type: application/json`、`credentials: same-origin`、`cache: no-store`。
+
+URL が uf が予約するパスではなくページなのは、そのパスをガードするミドルウェアがページの上と同じように呼び出しの上でも走るようにするためです。
+
+| ステータス | いつ |
+| --- | --- |
+| 200 | アクションが走り、結果が越えた |
+| 400 | ペイロードがこの文法でない |
+| 403 | `Origin` が欠落・パース不能・`Host` と不一致 |
+| 404 | その id の行がない（不正形、未知、呼べない） |
+| 405 | POST でない。`Allow: POST` を運ぶ |
+| 413 | body がアクションの受け付ける上限より大きい |
+| 415 | コンテントタイプが正確に `application/json` でない |
+| 500 | アクションが throw した、または結果が越えられない |
+
+**クロスサイト呼び出しは、3 重に偶然には起きません。** `uf-action` は simple request が設定できるヘッダではないので、クロスオリジン呼び出し側は preflight を必要とし、何も答えません。`application/json` は `<form>` が生成できるコンテントタイプではありません。そして `Origin` が存在し `Host` と等しくなければなりません。どれか 1 つで足りますが、3 つあるのはコストが 3 つの if で、失敗が誰かのアカウントだからです。
+
+`Origin` は `Host` と比較され、それ以外とは比較されません。`X-Forwarded-Host` は呼び出し側が書いた文字列です。uf アプリの前の proxy は `Host` を保存しなければならず、書き換えるものは全アクション呼び出しを穴ではなく 403 にします。
+
+## アクションは自分で認可する
+
+呼び出しの上で走るミドルウェアは便宜であり境界ではありません。URL は呼び出し側が選べるので、`/dashboard` のガードを飛ばしたいクライアントは同じ id を `/` に POST します。
+
+**サーバーアクションは、ルートハンドラと同じように、認可の単位です。** パスガードが走ったことに依存する `"use server"` 関数は穴のある関数です。アクションの中でセッションを読み、アクションの中で決め、すべての引数を見知らぬ人が送ったものとして扱ってください。実際そうかもしれないので。
+
+## id、そして何が呼べるのか
+
+アクション id は `HMAC-SHA256(build id, module ‖ export ‖ kind)` を 64 文字の小文字 16 進で表したものです。他の React フレームワークで実際の CVE を生んだ失敗にそれぞれ答える 4 つの性質:
+
+- **id は推測できない。** リポジトリ全体と公開されたソースマップがあっても、インターフェースが提供しない関数の id は導出できない。build id が鍵で、決して公開されない。
+- **id はリビルドを生き残らない。** 新しい build id は全アクション id を変えるので、より寛容な古いデプロイから捕まえた id は再生できない。
+- **クライアント境界が到達できるアクションだけが行を持つ。** 境界を越えて渡せないアクションはレジストリに記録されるがマニフェストには書かれず、エンドポイントを持たない。
+- **失敗した lookup はすべて同一に答える。** 不正形の id、正しい形だが誰も持たない id、呼べないものを名指す id、すべて同じ body の 404。テーブルは constant-time 比較で全走査される。
+
+再現可能なビルドが必要なら `UF_BUILD_ID` を設定します（8〜256 バイト）。
+
+## 失敗について何も返ってこない
+
+throw したアクションは固定 body の 500 です。例外はモジュールと export を名指ししてホストのエラー報告へ行きます。レスポンス内のメッセージ・名前・スタックは、頼んだ誰かに公開されたあなたのアプリの内部です。開発時もそうです。ブラウザ側では失敗した呼び出しは、ステータスとビルド時の `module#export` 名だけを運ぶ `ServerActionError` です。
+
+## ワイヤーが必要とする型
+
+Flow は宣言を読んで `createUser(36)` が間違いだと言えます。`string` がネットワークを越えられるものかは言えず、`createUser(when: Date)` は全呼び出し側で完璧に型チェックを通り、サーバーに `{}` として届きます。
+
+```sh
+uf prepare
+```
+
+`uf prepare` は `server-actions.js` を書きます。プロジェクトの全呼び出し可能アクションを `module#export` でキーし、宣言モジュールから `import typeof` で読んだ本物の型を持ち、全アクションの引数と結果をワイヤー文法に対してプロジェクト全体で一度に検査する 2 行を含みます。コールバックを取るアクションや `Map` を返すアクションは、型を名指しする `uf check` エラーになります。
+
+## ここにないもの
+
+- **Progressive enhancement。** JavaScript が届く前に送信されたフォームは動きません。React の仕組みは submit をネイティブフォーム POST に変える `$$FORM_ACTION` プロパティで、ネイティブフォーム POST は `multipart/form-data`。このエンドポイントが意図的に拒否するコンテントタイプです。意図されなかったものがサーバーに届くことはありません。欠けているのは submit が動くこと自体です。
+- **アップロード。** `File` エントリは呼び出し側で名指しで拒否されます。ルートハンドラを使ってください。
+- **インライン `"use server"` クロージャと、prop としてのサーバー関数。** モジュール export を書き、client component から import してください。
+- **参照フォーマット。**
+- **アクションキャッシュ。** `rendering.cache.actions` は設定読み込み時に名指しで拒否されます。
+- **静的デプロイ。** `build.staticBuild` と `uf build --adapter static` は、ブラウザがアクションを呼べるビルドのプロジェクトを拒否します。

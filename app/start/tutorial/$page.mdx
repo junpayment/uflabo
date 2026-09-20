@@ -1,0 +1,422 @@
+---
+title: "チュートリアル: 読書リストを作る"
+description: "uf new からアップロードできるディレクトリまで。ルーティング、レイアウト、ローダー、共有状態、アクセシブルなタブ、バリデーション付きフォーム、そのテスト。"
+section: "start"
+order: 4
+source: "/guide/tutorial"
+---
+
+import { Callout } from "../../_design/Callout.js";
+import { Figure } from "../../_design/Figure.js";
+
+## 何を作るか
+
+読みたい記事を並べるページ、記事ごとのページ、トピックで絞るタブ、ヘッダに数が出る保存ボタン、提案を追加するフォーム。11 ファイル、うち 3 つがテストです。
+
+要点はアプリではありません。**ルーティング・データ・状態・フォーム・UI 部品・型チェック・整形・テスト・ビルドが、1 つの設定ファイルを持つ 1 つのツールチェーンである**こと。以下のどこにもプラグインを入れたり第 2 の設定を書いたり変換を設定したりする箇所はありません。
+
+<Callout kind="note">
+公式のこのページは 0.0.0-alpha.5、Node v25.8.1 で実際に実行した出力を掲載しています。ここでは要点を抜き出して日本語で解説します。
+</Callout>
+
+## スキャフォールド
+
+```sh
+uf new reading-list
+cd reading-list && uf install
+```
+
+デモの 3 ファイル（`app/Counter.js`、`app/useCounter.js`、`app/$page.test.js`）を消して始めます。
+
+## データ
+
+素の Flow。フレームワークは一切入りません。
+
+<Figure title="app/articles.js">
+
+```js
+// @flow
+
+/// 記事の主題。ばらばらの文字列ではなく union にすることで、
+/// topicLabel の match が網羅的になる。トピックを足すと、読む側を全部更新するまでコンパイルが止まる。
+export type Topic = "flow" | "react" | "rust";
+
+export type Article = {
+  readonly slug: string,
+  readonly title: string,
+  readonly author: string,
+  readonly minutes: number,
+  readonly topic: Topic,
+};
+
+const ARTICLES: $ReadOnlyArray<Article> = [
+  { slug: "component-syntax", title: "Component syntax, and what it removes", author: "Ada", minutes: 6, topic: "flow" },
+  { slug: "the-compiler-is-not-magic", title: "The React Compiler is not magic", author: "Grace", minutes: 11, topic: "react" },
+  { slug: "one-parse", title: "One parse, five tools", author: "Alan", minutes: 4, topic: "rust" },
+];
+
+export function listArticles(): $ReadOnlyArray<Article> {
+  return ARTICLES;
+}
+
+export function findArticle(slug: string): Article | null {
+  return ARTICLES.find((article) => article.slug === slug) ?? null;
+}
+
+export function topicLabel(topic: Topic): string {
+  return match (topic) {
+    "flow" => "Flow",
+    "react" => "React",
+    "rust" => "Rust",
+  };
+}
+```
+
+</Figure>
+
+`match` は式で、文字列リテラルの union に対して網羅的です。`Topic` に `"go"` を足すと、本番で `undefined` を描画する代わりに `uf check` がここで失敗します。
+
+習慣ではなくこのファイルから写すべきこと 1 つ: オブジェクトプロパティには `+` ではなく `readonly`。variance 記号はモダン Flow では非推奨で、`uf check` はスタイル注意ではなくエラーとして報告します。
+
+## 一覧ページ
+
+ページは `$page.js` で、データが必要なページは描画前に走る `loader` を export します。
+
+<Figure title="app/$page.js">
+
+```js
+// @flow
+import { Link } from "@uniflowed/router";
+
+import { AddArticle } from "./AddArticle.js";
+import { type Article, listArticles } from "./articles.js";
+import { TopicTabs } from "./TopicTabs.js";
+
+export async function loader(): Promise<{ readonly articles: $ReadOnlyArray<Article> }> {
+  return { articles: listArticles() };
+}
+
+export component Page(data: { readonly articles: $ReadOnlyArray<Article> }) {
+  return (
+    <>
+      <h1>Reading list</h1>
+      <TopicTabs articles={data.articles} />
+      <h2>Everything</h2>
+      <ul>
+        {data.articles.map((article) => (
+          <li key={article.slug}>
+            <Link to={`/articles/${article.slug}`}>{article.title}</Link>
+          </li>
+        ))}
+      </ul>
+      <AddArticle />
+    </>
+  );
+}
+```
+
+</Figure>
+
+ルーターはページに `params` `searchParams` `data` の 3 つの props を渡し、`component` 宣言は欲しいものを名前で取ります。`data` の型は loader の戻り値型をもう一度書きます。uf は片方から他方を推論しません。
+
+## 記事ページ
+
+角括弧のディレクトリはパラメータなので、`app/articles/[slug]/$page.js` が `/articles/one-parse` を配信します。
+
+<Figure title="app/articles/[slug]/$page.js">
+
+```js
+// @flow
+import { notFound } from "@uniflowed/router";
+
+import { type Article, findArticle, listArticles, topicLabel } from "../../articles.js";
+
+export function generateStaticParams(): $ReadOnlyArray<{ readonly slug: string }> {
+  return listArticles().map((article) => ({ slug: article.slug }));
+}
+
+export async function loader({ params }: { readonly params: { readonly slug: string } }): Promise<{ readonly article: Article }> {
+  const article = findArticle(params.slug);
+  if (article == null) {
+    throw notFound();
+  }
+  return { article };
+}
+
+export component Page(data: { readonly article: Article }) {
+  return (
+    <article>
+      <h1>{data.article.title}</h1>
+      <p>
+        {data.article.author} · {topicLabel(data.article.topic)} · {data.article.minutes} min
+      </p>
+    </article>
+  );
+}
+```
+
+</Figure>
+
+`generateStaticParams` がパラメータ付きルートをプリレンダリング可能にします。ビルドがどのパラメータ集合が存在するかを尋ね、1 つにつき 1 HTML を書きます。なければ動的ルートにはファイルが作られず、`uf build` は「answered by a server」に列挙し、静的ホストは 404 を返します。
+
+`notFound()` は `throw notFound()` と書いています。それ自体で throw するのですが、`throw` は型チェッカーのためです。Flow は「戻らない呼び出し」を分岐の終端として扱う解析を持たないので、`throw` がないと次の行で `article` は依然 `null` になり得ます。
+
+## レイアウト
+
+<Figure title="app/$layout.js">
+
+```js
+// @flow
+import * as React from "@uniflowed/react";
+import { Link } from "@uniflowed/router";
+
+import { SavedCount } from "./SavedCount.js";
+
+export component Layout(children: React.Node) {
+  return (
+    <html lang="en">
+      <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <title>Reading list</title>
+      </head>
+      <body>
+        <header>
+          <Link to="/">Reading list</Link>
+          <SavedCount />
+        </header>
+        <main>{children}</main>
+      </body>
+    </html>
+  );
+}
+```
+
+</Figure>
+
+レイアウトは配下のページ間を移動してもマウントされたままなので、ヘッダのカウントはどこにも持ち上げなくても遷移をまたいで生き残ります。
+
+## 2 つのコンポーネントが共有する状態
+
+`@uniflowed/state` は atom です。モジュールスコープで宣言し、どこからでも読み書きでき、マウントする Provider はありません。
+
+<Figure title="app/state.js">
+
+```js
+"use client";
+// @flow
+import { action, atom, selector } from "@uniflowed/state";
+
+/// 保存した slug。一覧から書き、ヘッダから読む。間に何も渡さない。
+export const savedSlugs = atom<$ReadOnlyArray<string>>([]);
+
+/// 派生。数が変わったときだけヘッダが再描画され、同じ長さで書き換わっても再描画されない。
+export const savedCount = selector<number>((get) => get(savedSlugs).length);
+
+/// 書き込み専用 atom。useSetAtom(toggleSaved) は一覧を購読せずに setter を渡す。
+export const toggleSaved = action<string>((get, set, slug) => {
+  const saved = get(savedSlugs);
+  set(savedSlugs, saved.includes(slug) ? saved.filter((each) => each !== slug) : [...saved, slug]);
+});
+
+export type Suggestion = { readonly id: number, readonly title: string };
+export const suggestions = atom<$ReadOnlyArray<Suggestion>>([]);
+
+let nextSuggestionId = 0;
+export const suggest = action<string>((get, set, title) => {
+  nextSuggestionId += 1;
+  set(suggestions, [...get(suggestions), { id: nextSuggestionId, title }]);
+});
+```
+
+</Figure>
+
+Jotai を使ったことがあれば形は馴染みがあり、名前は違います。`atom(value)` `atom(read)` `atom(read, write)` `atom(null, write)` はここでは `atom` `selector` `writableSelector` `action` の 4 つの別関数です。Flow はオーバーロード集合の解決が TypeScript より苦手で、`atom(f)` は実行時に派生 atom と「関数を持つプリミティブ atom」を区別できないからです。
+
+`"use client"` はモジュールをブラウザのものとしてマークします。モジュールスコープの状態はサーバーではプロセスごとなので、リクエストごとに描画するアプリは `Provider` でリクエストごとにストアを渡すべきです。プリレンダリングのこの例では不要です。
+
+## キーボードで使えるタブ
+
+`@uniflowed/ui` は挙動を出荷し、スタイルは出荷しません。
+
+<Figure title="app/TopicTabs.js">
+
+```js
+"use client";
+// @flow
+import { useAtomValue, useSetAtom } from "@uniflowed/state";
+import { Tabs } from "@uniflowed/ui";
+
+import { type Article, type Topic, topicLabel } from "./articles.js";
+import { savedSlugs, toggleSaved } from "./state.js";
+
+const TOPICS: $ReadOnlyArray<Topic> = ["flow", "react", "rust"];
+
+component SaveButton(slug: string) {
+  const saved = useAtomValue(savedSlugs);
+  const toggle = useSetAtom(toggleSaved);
+  const isSaved = saved.includes(slug);
+  return (
+    <button type="button" aria-pressed={isSaved} onClick={() => toggle(slug)}>
+      {isSaved ? "Saved" : "Save"}
+    </button>
+  );
+}
+
+export component TopicTabs(articles: $ReadOnlyArray<Article>) {
+  return (
+    <Tabs.Root defaultValue="flow">
+      <Tabs.List aria-label="Topics">
+        {TOPICS.map((topic) => (
+          <Tabs.Tab key={topic} value={topic}>{topicLabel(topic)}</Tabs.Tab>
+        ))}
+      </Tabs.List>
+      {TOPICS.map((topic) => (
+        <Tabs.Panel key={topic} value={topic}>
+          <ul>
+            {articles.filter((a) => a.topic === topic).map((article) => (
+              <li key={article.slug}>{article.title} <SaveButton slug={article.slug} /></li>
+            ))}
+          </ul>
+        </Tabs.Panel>
+      ))}
+    </Tabs.Root>
+  );
+}
+```
+
+</Figure>
+
+1 行も書かずに得たもの: 双方向に配線された `role="tablist"` / `role="tab"` / `role="tabpanel"`、ページのタブ順にちょうど 1 つのタブ、リストに沿って動きラップする矢印キー、Home と End、そしてページをスクロールできるよう意図的に放置された ArrowDown。
+
+## フォーム
+
+<Figure title="app/AddArticle.js">
+
+```js
+"use client";
+// @flow
+import { useForm } from "@uniflowed/form";
+import { useAtomValue, useSetAtom } from "@uniflowed/state";
+
+import { suggestions, suggest } from "./state.js";
+
+export component AddArticle() {
+  const { register, handleSubmit, errorProps, formState, reset } = useForm({
+    defaultValues: { title: "", minutes: "" },
+  });
+  const add = useSetAtom(suggest);
+  const added = useAtomValue(suggestions);
+
+  return (
+    <section>
+      <h2>Suggest an article</h2>
+      <form onSubmit={handleSubmit((values) => { add(values.title); reset(); })}>
+        <label htmlFor="title">Title</label>
+        <input id="title" {...register("title", { required: "A title is required" })} />
+        {formState.errors.title != null && (
+          <p {...errorProps("title")}>{formState.errors.title.message}</p>
+        )}
+
+        <label htmlFor="minutes">Minutes</label>
+        <input id="minutes" {...register("minutes", {
+          required: "How long is it?",
+          valueAsNumber: true,
+          min: { value: 1, message: "At least a minute" },
+        })} />
+        {formState.errors.minutes != null && (
+          <p {...errorProps("minutes")}>{formState.errors.minutes.message}</p>
+        )}
+
+        <button type="submit" disabled={formState.isSubmitting}>Add</button>
+      </form>
+      <ul>
+        {added.map((s) => <li key={s.id}>{s.title}</li>)}
+      </ul>
+    </section>
+  );
+}
+```
+
+</Figure>
+
+入力は非制御です。`register` が各入力に `name`、`ref`、そして失敗後に `aria-invalid="true"` とメッセージを指す `aria-describedby` を与えます。`errorProps("title")` がもう半分（対応する `id` と `role="alert"`）を与えるので、配線は「覚えておく慣習」ではなく「ペアの呼び出し」です。フィールドが有効な間はどちらの属性も出ません。存在しない要素を指す `aria-describedby` は、スクリーンリーダーに何も読ませないからです。
+
+## テスト
+
+<Figure title="app/articles.test.js">
+
+```js
+// @flow
+import { describe, expect, it } from "@uniflowed/test";
+import { findArticle, listArticles, topicLabel } from "./articles.js";
+
+describe("the reading list", () => {
+  it("finds an article by its slug", () => {
+    expect(findArticle("one-parse")?.author).toBe("Alan");
+  });
+  it("answers null for a slug nothing matches", () => {
+    expect(findArticle("nope")).toBe(null);
+  });
+});
+```
+
+</Figure>
+
+コンポーネントテストはランナーと DOM ヘルパーを `@uniflowed/testing` から 1 か所で import し、セットアップファイルは不要です。最初の render で DOM がインストールされます。
+
+<Figure title="app/TopicTabs.test.js">
+
+```js
+// @flow
+import { describe, expect, it, render, screen, userEvent } from "@uniflowed/testing";
+import { listArticles } from "./articles.js";
+import { TopicTabs } from "./TopicTabs.js";
+
+describe("TopicTabs", () => {
+  it("moves between topics with the arrow keys", async () => {
+    render(<TopicTabs articles={listArticles()} />);
+    await userEvent.click(screen.getByRole("tab", { name: "Flow" }));
+    await userEvent.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tabpanel").textContent).toContain("React Compiler");
+  });
+});
+```
+
+</Figure>
+
+フォームのテストはアクセシビリティの配線を信じるのではなく検証します: `role="alert"` のメッセージ、`aria-invalid="true"`、そしてメッセージの `id` に一致する `aria-describedby`。
+
+```sh
+uf test
+```
+
+出力には各ケースの ✓、最も遅いファイルの表、`run` と `total` の時間、`passed / failed / skipped / todo`、ワーカー数、スケジュール（記録済み durations か、サイズ順か）、ホストが並びます。
+
+## チェックと整形
+
+```sh
+uf check
+```
+
+14 ファイルを尋ね、105 ファイルが型付けされました。残り 91 はこのアプリが import する `@uniflowed` パッケージで、`node_modules` から読まれ、ルーターやフォームの本物の型に対してチェックするために使われます。`any` として型付けされた import は名指しされるので、穴は黙って隠されるのではなく明言されます。
+
+`uf fmt --check` はこのページの全ファイルで 0 を返します。コードは手ではなくツールで整形されました。
+
+## ビルド
+
+```sh
+uf build --size-report
+```
+
+2 ルート、4 プリレンダリング済みページ（`/` と `generateStaticParams` の 3 エントリ）。タブリストは ARIA を付けた状態で HTML に入り、ローダーはビルド中に走り、gzip 80 kB のうち 63.6 kB は React 自身です。
+
+`dist/` は静的ファイルで、どんな静的ホストでも配信できます。`uf-build-manifest.json` `uf-rsc-manifest.json` `uf-bundle-report.json` の 3 つはあなたとツール用で、訪問者が取得できるものから 1 ディレクトリ離れた `.uf/build/meta/` に置かれます。
+
+## 動かなかったこと
+
+公式ページを書く中で見つかった 4 つのうち 3 つは修正済み（stylex のスタイルシートが `dist/` に届く #306、React Compiler の警告がファイルと関数を名指しする #307、`--localstorage-file` 警告 #308）。1 つは残っています。
+
+| 何 | どこで噛むか | 追跡 |
+| --- | --- | --- |
+| 戻らない呼び出しが分岐を終わらせない | `throw notFound()`。`notFound(): empty` で済むはずの場所 | Flow 自身の問題。該当する解析がない |

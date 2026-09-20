@@ -1,0 +1,64 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 実行中のデプロイは止めない。並んだ push はまとめて最後のものが出る。
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # uf はビルドとテストを JavaScript ホストに渡すので Node が要る
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # uf はバイナリ 1 つ。版は固定する（latest はパイプラインの下で動く）
+      - name: uf をインストール
+        env:
+          UF_VERSION: 0.0.0-alpha.40
+        run: |
+          curl -fsSL https://setup.uniflowed.dev | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: バージョン
+        run: uf info
+
+      # ツールチェーンはプロジェクトではない。チェックの前に必ず入れる
+      - name: 依存をインストール
+        run: uf install --frozen-lockfile
+
+      # fmt --check → check → pages → build → リンク検査
+      - name: チェックとビルド
+        run: uf run ci
+
+      # GitHub Pages は _ 始まりを無視するので、__uf.flight（48 個）のために置く
+      - name: .nojekyll を置く
+        run: touch dist/.nojekyll
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
